@@ -50,6 +50,9 @@ Link und Einladungscode schicken. Jeder legt mit E-Mail und Passwort ein Konto a
 - **Pokale:** Kreispokal → Bezirkspokal Hannover → 21 Landespokale → DFB-Pokal. Der Sieger spielt in der nächsten Saison zusätzlich im nächsthöheren Pokal.
 - **Fairness:** Die Ergebnisse eines Tages hängen von einem geheimen Zufallswert ab, den der Server erst um 18:00 Uhr freigibt. Niemand kann vorher ausrechnen, wie ein Spiel ausgeht.
 
+- **Chat:** Nachrichten an alle oder privat an einzelne Mitspieler (Tabelle `messages`, siehe `supabase_chat.sql`).
+- **Erfolge:** Trophäenschrank je Verein (Meisterschaften aller Ligen, alle Pokale) und Bestenliste der Bundesliga mit Torjägerliste, Meistern, Torschützenkönigen, Rekorden und ewiger Tabelle.
+
 ## Hinweise
 
 - Jedes Gerät berechnet den Spielstand aus allen Aktionen selbst. Mit ca. 400 Spielen pro Tag dauert das auch nach vielen Saisons nur Sekundenbruchteile.

@@ -47,6 +47,8 @@ const solo = {
     const eff = Math.max(1, revealedDay(this.s.start) + 1);
     this.s.actions.push({ id: this.s.nextId++, user_id: "solo", type, payload, eff_day: eff }); soloSave(this.s);
   },
+  async messages() { return (this.s.msgs || []).slice(-200); },
+  async sendMessage(to, body) { this.s.msgs = this.s.msgs || []; this.s.msgs.push({ id: Date.now(), user_id: "solo", to_user: to || null, body, created_at: new Date().toISOString() }); soloSave(this.s); },
   async rename(name) { this.s.name = name; soloSave(this.s); },
   reset() { localStorage.removeItem(LS); },
   // Testhilfe: Start um n Tage vorverlegen (simuliert vergangene Spieltage)
@@ -66,7 +68,11 @@ const online = {
     if (this.user) { const { data: m } = await sb.from("members").select("user_id").eq("user_id", this.user.id).maybeSingle(); member = !!m; }
     return { user: this.user, member };
   },
-  async signUp(email, password) { const { data, error } = await sb.auth.signUp({ email, password }); if (error) throw error; this.user = data.user; return data; },
+  async signUp(email, password) {
+    const { data, error } = await sb.auth.signUp({ email, password }); if (error) throw error;
+    if (!data.session) { const r = await sb.auth.signInWithPassword({ email, password }); if (r.error) throw new Error("Konto angelegt. Bitte bestätige zuerst die E-Mail und melde dich dann an."); }
+    this.user = data.user; return data;
+  },
   async signIn(email, password) { const { data, error } = await sb.auth.signInWithPassword({ email, password }); if (error) throw error; this.user = data.user; return data; },
   async signOut() { await sb.auth.signOut(); this.user = null; },
   async join(code, name) { const { error } = await sb.rpc("join_game", { code, name }); if (error) throw error; },
@@ -81,6 +87,11 @@ const online = {
     return out;
   },
   async members() { const { data, error } = await sb.from("members").select("user_id,display_name"); if (error) throw error; return Object.fromEntries(data.map((m) => [m.user_id, m.display_name])); },
+  async messages() {
+    const { data, error } = await sb.from("messages").select("id,user_id,to_user,body,created_at").order("id", { ascending: false }).limit(200);
+    if (error) throw error; return data.reverse();
+  },
+  async sendMessage(to, body) { const { error } = await sb.from("messages").insert({ to_user: to || null, body }); if (error) throw error; },
   async submit(type, payload) { const { error } = await sb.from("actions").insert({ type, payload }); if (error) throw error; },
 };
 

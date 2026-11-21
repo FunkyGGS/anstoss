@@ -19,6 +19,7 @@ async function boot() {
     if (MODE === "online" && !r.member) return renderJoin();
     await load();
     setInterval(poll, 60000);
+    setInterval(pollChat, 15000);
     setInterval(tick, 1000);
   } catch (e) { console.error(e); $app.innerHTML = `<div class="center"><div class="card auth"><h3>Fehler beim Laden</h3><p class="muted">${esc(e.message || e)}</p></div></div>`; }
 }
@@ -26,12 +27,26 @@ async function boot() {
 async function load() {
   const [info, seeds, actions, members] = await Promise.all([backend.info(), backend.seeds(), backend.actions(), backend.members()]);
   app.info = info; app.seeds = seeds; app.actions = actions; app.members = members;
+  await loadMsgs();
   app.sig = seeds.length + ":" + actions.length;
   if (!seeds.length) return renderWaiting();
   const t0 = performance.now();
   app.S = E.simulate(app.world, seeds, actions, members);
   app.simMs = Math.round(performance.now() - t0);
   render();
+}
+async function loadMsgs() {
+  try { app.msgs = await backend.messages(); app.chatError = null; } catch (e) { app.msgs = app.msgs || []; app.chatError = e.message || String(e); }
+}
+async function pollChat() {
+  const before = app.msgs?.length ? app.msgs[app.msgs.length - 1].id : 0;
+  await loadMsgs();
+  const after = app.msgs?.length ? app.msgs[app.msgs.length - 1].id : 0;
+  if (after !== before && app.S) {
+    const draft = document.getElementById("chatmsg")?.value, hadFocus = document.activeElement?.id === "chatmsg";
+    const y = window.scrollY; render(); window.scrollTo(0, y);
+    const inp = document.getElementById("chatmsg"); if (inp && draft) inp.value = draft; if (inp && hadFocus) inp.focus();
+  }
 }
 async function poll() {
   try {
@@ -61,7 +76,7 @@ function toast(msg) {
 // ------------------------------------------------------------ Anmeldung
 function renderAuth() {
   $app.innerHTML = `<div class="center"><div class="card auth">
-    <h2>Anstoß</h2><p class="sub">Melde dich an oder lege ein Konto an. Danach brauchst du den Einladungscode.</p>
+    <h2>Anstoß</h2><p class="sub"><b>Schritt 1 von 2:</b> Konto anlegen bzw. anmelden. Das Passwort denkst du dir selbst aus (mind. 6 Zeichen). Den Einladungscode gibst du im nächsten Schritt ein.</p>
     <input id="em" type="email" placeholder="E-Mail" autocomplete="email">
     <input id="pw" type="password" placeholder="Passwort (mind. 6 Zeichen)" autocomplete="current-password">
     <div class="row"><button class="btn pri" id="in">Anmelden</button><button class="btn" id="up">Konto anlegen</button></div>
@@ -77,7 +92,7 @@ function renderAuth() {
 }
 function renderJoin() {
   $app.innerHTML = `<div class="center"><div class="card auth">
-    <h2>Dem Spiel beitreten</h2><p class="sub">Den Einladungscode bekommst du von der Person, die das Spiel eingerichtet hat.</p>
+    <h2>Dem Spiel beitreten</h2><p class="sub"><b>Schritt 2 von 2.</b> Den Einladungscode bekommst du von der Person, die das Spiel eingerichtet hat.</p>
     <input id="nm" placeholder="Dein Name im Spiel" maxlength="30">
     <input id="cd" placeholder="Einladungscode">
     <div class="row"><button class="btn pri" id="jn">Beitreten</button><button class="btn" id="out">Abmelden</button></div>
@@ -119,8 +134,8 @@ function initials(name) { return name.replace(/[^A-Za-zÄÖÜäöüß0-9 ]/g, ""
 // ------------------------------------------------------------ Rahmen
 function render() {
   const c = myClub(); const u = meUser();
-  const tabs = c ? [["home", "Übersicht"], ["kader", "Kader"], ["transfer", "Transfers"], ["verein", "Verein"], ["finanzen", "Finanzen"], ["ligen", "Ligen"], ["pokale", "Pokale"], ["spieler", "Mitspieler"]]
-    : [["start", "Start"], ["ligen", "Ligen"], ["pokale", "Pokale"], ["spieler", "Mitspieler"]];
+  const tabs = c ? [["home", "Übersicht"], ["kader", "Kader"], ["transfer", "Transfers"], ["verein", "Verein"], ["finanzen", "Finanzen"], ["ligen", "Ligen"], ["pokale", "Pokale"], ["erfolge", "Erfolge"], ["chat", "Chat" + unreadBadge()], ["spieler", "Mitspieler"]]
+    : [["start", "Start"], ["ligen", "Ligen"], ["pokale", "Pokale"], ["erfolge", "Erfolge"], ["chat", "Chat" + unreadBadge()], ["spieler", "Mitspieler"]];
   if (!tabs.find((t) => t[0] === app.tab)) app.tab = tabs[0][0];
   const t = c ? E.firstTeam(S(), c) : null;
   const nd = nextDay();
@@ -143,9 +158,10 @@ function render() {
   </div></header><main class="wrap" id="main"></main>`;
   $app.querySelectorAll("nav button").forEach((b) => (b.onclick = () => { app.tab = b.dataset.tab; render(); }));
   const main = document.getElementById("main");
-  const view = { home: vHome, kader: vKader, transfer: vTransfer, verein: vVerein, finanzen: vFinanzen, ligen: vLigen, pokale: vPokale, spieler: vSpieler, start: vStart }[app.tab];
+  const view = { home: vHome, kader: vKader, transfer: vTransfer, verein: vVerein, finanzen: vFinanzen, ligen: vLigen, pokale: vPokale, spieler: vSpieler, start: vStart, erfolge: vErfolge, chat: vChat }[app.tab];
   main.innerHTML = view();
   bindActions(main);
+  if (app.tab === "chat") bindChat(main);
   tick();
 }
 function bindActions(root) {
@@ -396,6 +412,100 @@ function vSpieler() {
     <div>${last.cups.map((x) => `<div class="small"><span class="muted">${esc(x.name)}:</span> ${esc(x.winner || "–")}</div>`).join("")}</div></div></div>` : ""}
   ${newsCard()}
   <p class="small muted" style="margin-top:14px">Berechnet in ${app.simMs} ms · ${app.actions.length} Aktionen · ${app.seeds.length - 1} gespielte Tage · Daten: ${esc(app.world.source)}${MODE === "solo" ? ' · <a href="#" id="reset">Solo-Spiel zurücksetzen</a>' : ' · <a href="#" id="logout">Abmelden</a>'}</p>`;
+}
+
+
+// ------------------------------------------------------------ Chat
+const LS_SEEN = "fm_chat_seen";
+function lastSeen() { try { return Number(localStorage.getItem(LS_SEEN) || 0); } catch { return 0; } }
+function unreadBadge() {
+  if (app.tab === "chat" || !app.msgs?.length) return "";
+  const n = app.msgs.filter((m) => m.id > lastSeen() && m.user_id !== app.me).length;
+  return n ? ` <span class="pill crit">${n}</span>` : "";
+}
+const userName = (id) => S()?.users.get(id)?.name || app.members[id] || "Unbekannt";
+function vChat() {
+  if (app.msgs?.length) try { localStorage.setItem(LS_SEEN, String(app.msgs[app.msgs.length - 1].id)); } catch {}
+  if (app.chatError) return `<h2>Chat</h2><div class="card"><p class="crit">Der Chat ist noch nicht eingerichtet.</p><p class="small muted">${esc(app.chatError)}</p></div>`;
+  const to = app.sel.chatTo || "";
+  const others = Object.entries(app.members).filter(([id]) => id !== app.me);
+  const filter = app.sel.chatFilter || "alle";
+  const list = (app.msgs || []).filter((m) => filter === "alle" ? true : filter === "privat" ? !!m.to_user : !m.to_user);
+  const fmtT = (iso) => new Date(iso).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" });
+  return `<div class="row" style="justify-content:space-between"><h2>Chat</h2>
+    <div class="seg">${[["alle", "Alle"], ["oeffentlich", "Öffentlich"], ["privat", "Privat"]].map(([k, n]) => `<button data-sel="chatFilter" data-v="${k}" aria-pressed="${filter === k}">${n}</button>`).join("")}</div></div>
+  <div class="card" id="chatbox" style="max-height:55vh;overflow:auto;display:flex;flex-direction:column;gap:8px">
+    ${list.map((m) => { const mine = m.user_id === app.me; const priv = !!m.to_user;
+      return `<div style="align-self:${mine ? "flex-end" : "flex-start"};max-width:85%;background:${mine ? "var(--accent-soft)" : "var(--surface2)"};border:1px solid ${priv ? "var(--warn)" : "var(--line)"};border-radius:10px;padding:7px 10px">
+        <div class="small muted">${esc(userName(m.user_id))}${priv ? ` → ${esc(m.to_user === app.me ? "dich" : userName(m.to_user))} <span class="pill warn">privat</span>` : ""} · ${fmtT(m.created_at)}</div>
+        <div style="white-space:pre-wrap;word-break:break-word">${esc(m.body)}</div></div>`; }).join("") || '<div class="muted">Noch keine Nachrichten.</div>'}
+  </div>
+  <div class="card" style="margin-top:10px"><div class="row">
+    <select id="chatto"><option value="">An: alle</option>${others.map(([id, n]) => `<option value="${esc(id)}" ${to === id ? "selected" : ""}>An: ${esc(n)} (privat)</option>`).join("")}</select>
+    <input id="chatmsg" maxlength="1000" placeholder="Nachricht …" style="flex:1;min-width:180px">
+    <button class="btn pri" id="chatsend">Senden</button></div>
+    <p class="small muted" style="margin:6px 0 0">Private Nachrichten sehen nur Absender und Empfänger. Neue Nachrichten erscheinen automatisch.</p></div>`;
+}
+function bindChat(root) {
+  const box = root.querySelector("#chatbox"); if (box) box.scrollTop = box.scrollHeight;
+  const send = async () => {
+    const inp = root.querySelector("#chatmsg"); const body = inp.value.trim(); if (!body) return;
+    const to = root.querySelector("#chatto").value; app.sel.chatTo = to;
+    try { await backend.sendMessage(to, body); inp.value = ""; await loadMsgs(); render(); setTimeout(() => document.getElementById("chatmsg")?.focus(), 0); }
+    catch (e) { toast("Fehler: " + (e.message || e)); }
+  };
+  root.querySelector("#chatsend")?.addEventListener("click", send);
+  root.querySelector("#chatmsg")?.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+  root.querySelector("#chatto")?.addEventListener("change", (e) => { app.sel.chatTo = e.target.value; });
+}
+
+// ------------------------------------------------------------ Erfolge: Trophäenschrank & Bestenliste
+const CUP_ICON = (t) => (t.kind === "liga" ? "🏆" : "🥇");
+function trophyCase(club) {
+  const list = (S().trophies.get(club.id) || []).slice().sort((a, b) => a.level - b.level || b.season - a.season);
+  if (!list.length) return '<p class="muted small">Noch keine Titel – der Schrank wartet.</p>';
+  const groups = {};
+  for (const t of list) { const k = t.title + (t.team !== club.name ? ` (${t.team})` : ""); (groups[k] = groups[k] || { t, seasons: [] }).seasons.push(t.season); }
+  return `<div class="grid g3" style="gap:8px">${Object.entries(groups).map(([k, g]) => `<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--surface2)">
+    <div style="font-size:22px">${CUP_ICON(g.t).repeat(Math.min(g.seasons.length, 5))}${g.seasons.length > 5 ? ` <b>×${g.seasons.length}</b>` : ""}</div>
+    <b>${esc(k)}</b><div class="small muted">Saison ${g.seasons.sort((a, b) => a - b).join(", ")}</div></div>`).join("")}</div>`;
+}
+function vErfolge() {
+  const c = myClub();
+  const humanClubs = [...S().clubs.values()].filter((x) => x.owner && x.id !== c?.id);
+  const sub = app.sel.erfolgeSub || "schrank";
+  const seg = `<div class="seg" style="margin-bottom:12px">${[["schrank", "Trophäenschrank"], ["bl", "Bestenliste Bundesliga"]].map(([k, n]) => `<button data-sel="erfolgeSub" data-v="${k}" aria-pressed="${sub === k}">${n}</button>`).join("")}</div>`;
+  if (sub === "schrank") {
+    return `<h2>Erfolge</h2>${seg}
+    ${c ? `<div class="card"><h3>${esc(c.name)}</h3>${trophyCase(c)}</div>` : ""}
+    ${humanClubs.map((x) => `<div class="card" style="margin-top:12px"><h3>${esc(x.name)} <span class="pill">${esc(ownerName(x))}</span></h3>${trophyCase(x)}</div>`).join("")}
+    <p class="small muted" style="margin-top:12px">Titel werden am Saisonumbruch (Tag 35) vergeben: Meisterschaften aller Ligen sowie Kreis-, Bezirks-, Landes- und DFB-Pokal. Titel von 2./3. Mannschaften zählen für den Verein.</p>`;
+  }
+  const bl = S().leagues.get("bl");
+  const live = new Map([...S().eternal.values()].map((e) => [e.id, { ...e }]));
+  for (const r of bl.table.values()) {
+    const e = live.get(r.id) || { id: r.id, name: team(r.id).name, seasons: 0, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, pts: 0, titles: 0 };
+    if (r.p) { e.seasons++; e.p += r.p; e.w += r.w; e.d += r.d; e.l += r.l; e.gf += r.gf; e.ga += r.ga; e.pts += r.pts; }
+    live.set(r.id, e);
+  }
+  const eternal = [...live.values()].filter((e) => e.p).sort((a, b) => b.pts - a.pts || (b.gf - b.ga) - (a.gf - a.ga));
+  const sc = E.topScorers(S(), 20);
+  const R = S().records; const mine = new Set(c ? c.teams : []);
+  const recLine = (lbl, r, txt) => r ? `<div class="kv" style="margin-bottom:4px"><label>${lbl}</label><span>${txt} <span class="muted small">(Saison ${r.season}${r.day ? ", Spieltag " + r.day : ""})</span></span></div>` : "";
+  return `<h2>Erfolge</h2>${seg}
+  <div class="grid g2">
+    <div class="card"><h3>Torjäger Saison ${S().season}</h3><div class="scroll"><table><thead><tr><th>#</th><th>Spieler</th><th>Verein</th><th class="r">Tore</th></tr></thead><tbody>
+      ${sc.map((x, i) => `<tr class="${mine.has(x.team) ? "me" : ""}"><td>${i + 1}</td><td>${esc(x.name)}</td><td class="small">${esc(team(x.team)?.name || "")}</td><td class="r"><b>${x.goals}</b></td></tr>`).join("") || '<tr><td class="muted" colspan="4">Noch keine Tore.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3>Meister & Torschützenkönige</h3>${S().history.length ? `<div class="scroll"><table><thead><tr><th>Saison</th><th>Meister</th><th>Torschützenkönig</th></tr></thead><tbody>
+      ${S().history.slice().reverse().map((h) => `<tr><td>${h.season}</td><td>${esc(h.blChampion || "–")}</td><td class="small">${h.topScorer ? `${esc(h.topScorer.name)} (${esc(h.topScorer.team)}, ${h.topScorer.goals})` : "–"}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted small">Die erste Saison läuft noch.</p>'}
+      <h3 style="margin-top:14px">Rekorde</h3>
+      ${recLine("Meiste Punkte", R.maxPts, R.maxPts ? `${esc(R.maxPts.name)} – ${R.maxPts.pts} Punkte` : "")}
+      ${recLine("Höchster Sieg", R.bigWin, R.bigWin ? `${esc(R.bigWin.h)} – ${esc(R.bigWin.a)} ${R.bigWin.gh}:${R.bigWin.ga}` : "")}
+      ${recLine("Torreichstes Spiel", R.maxGoals, R.maxGoals ? `${esc(R.maxGoals.h)} – ${esc(R.maxGoals.a)} ${R.maxGoals.gh}:${R.maxGoals.ga}` : "")}
+      ${!R.bigWin ? '<p class="muted small">Noch keine Rekorde.</p>' : ""}</div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Ewige Tabelle der Bundesliga</h3><p class="small muted">Alle Bundesliga-Spiele seit Spielbeginn, inklusive laufender Saison.</p><div class="scroll"><table><thead><tr><th>#</th><th>Verein</th><th class="r">Jahre</th><th class="r">Sp</th><th class="r">S</th><th class="r">U</th><th class="r">N</th><th class="r">Tore</th><th class="r">Pkt</th><th class="r">Titel</th></tr></thead><tbody>
+    ${eternal.map((e, i) => `<tr class="${mine.has(e.id) ? "me" : ""}"><td>${i + 1}</td><td>${esc(e.name)}</td><td class="r">${e.seasons}</td><td class="r">${e.p}</td><td class="r">${e.w}</td><td class="r">${e.d}</td><td class="r">${e.l}</td><td class="r">${e.gf}:${e.ga}</td><td class="r"><b>${e.pts}</b></td><td class="r">${e.titles ? "🏆".repeat(Math.min(e.titles, 3)) + (e.titles > 3 ? e.titles : "") : ""}</td></tr>`).join("")}</tbody></table></div></div>`;
 }
 
 document.addEventListener("click", async (e) => {

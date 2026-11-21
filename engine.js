@@ -123,6 +123,7 @@ export function createState(world, seasonSeed1) {
     season: 1, day: 0, teams: new Map(), clubs: new Map(), leagues: new Map(), groups: new Map(),
     pools: new Map(), cups: [], users: new Map(), news: [], history: [], taken: new Set(), freeAgents: [],
     seasonSeed: seasonSeed1, cupWinners: {}, prevThird: [], lastTables: new Map(), nextId: 1,
+    trophies: new Map(), eternal: new Map(), scorers: new Map(), squadCache: new Map(), records: { maxPts: null, bigWin: null, maxGoals: null },
   };
   for (const l of world.leagues) {
     S.leagues.set(l.id, { id: l.id, name: l.name, level: l.level, group: l.group, teams: [] });
@@ -378,6 +379,7 @@ function roundRobin(ids, rng) {
 }
 
 export function startSeason(S) {
+  S.scorers = new Map(); S.squadCache = new Map();
   for (const lg of S.leagues.values()) {
     const rng = seasonRng(S, "sched", lg.id);
     const rounds = roundRobin(lg.teams, rng);
@@ -816,6 +818,7 @@ export function playDay(S, g, daySeed) {
       th.p++; ta.p++; th.gf += r.gh; th.ga += r.ga; ta.gf += r.ga; ta.ga += r.gh;
       if (r.gh > r.ga) { th.w++; th.pts += 3; ta.l++; } else if (r.gh < r.ga) { ta.w++; ta.pts += 3; th.l++; } else { th.d++; ta.d++; th.pts++; ta.pts++; }
       matchFinance(S, m.h, m.a, r, lg.level, false, null);
+      if (lg.level === 1) blStats(S, m, daySeed);
     }
   }
   for (const t of S.teams.values()) t.fatigue = 0;
@@ -921,6 +924,49 @@ function humanDaily(S, c, daySeed) {
   }
 }
 
+
+// ---------------------------------------------------------------- Bundesliga: Torschützen & Rekorde
+function scorerPool(S, t) {
+  const c = S.clubs.get(t.clubId);
+  if (t.rank === 1 && c?.h) return c.h.players.map((p) => ({ id: p.id, name: p.name, pos: p.pos, str: p.str }));
+  let sq = S.squadCache.get(t.id);
+  if (!sq) { sq = aiSquad(S, t); S.squadCache.set(t.id, sq); }
+  return sq;
+}
+const POS_W = { TW: 0, AB: 0.2, MF: 0.9, ST: 5 };
+function pickScorer(rng, pool) {
+  const ranked = pool.slice().sort((a, b) => b.str - a.str || (a.id < b.id ? -1 : 1));
+  const top = ranked[0]?.str || 1;
+  const w = ranked.map((p, i) => POS_W[p.pos] * Math.pow(p.str / top, 6) * (i < 14 ? 1 : 0.15));
+  const tot = w.reduce((a, b) => a + b, 0); if (!tot) return null;
+  let x = rng() * tot;
+  for (let i = 0; i < ranked.length; i++) { x -= w[i]; if (x <= 0) return ranked[i]; }
+  return ranked[ranked.length - 1];
+}
+function blStats(S, m, daySeed) {
+  const rng = rngFrom(daySeed, "scorer", m.h, m.a);
+  for (const [tid, goals] of [[m.h, m.gh], [m.a, m.ga]]) {
+    const t = S.teams.get(tid); const pool = scorerPool(S, t);
+    for (let g = 0; g < goals; g++) {
+      const p = pickScorer(rng, pool); if (!p) continue;
+      const e = S.scorers.get(p.id) || { id: p.id, name: p.name, team: tid, goals: 0 };
+      e.goals++; S.scorers.set(p.id, e);
+    }
+  }
+  const diff = Math.abs(m.gh - m.ga), tot = m.gh + m.ga;
+  const rec = { season: S.season, day: S.day, h: S.teams.get(m.h).name, a: S.teams.get(m.a).name, gh: m.gh, ga: m.ga };
+  if (!S.records.bigWin || diff > Math.abs(S.records.bigWin.gh - S.records.bigWin.ga)) S.records.bigWin = rec;
+  if (!S.records.maxGoals || tot > S.records.maxGoals.gh + S.records.maxGoals.ga) S.records.maxGoals = rec;
+}
+export function topScorers(S, n = 25) {
+  return [...S.scorers.values()].sort((a, b) => b.goals - a.goals || (a.name < b.name ? -1 : 1)).slice(0, n);
+}
+function addTrophy(S, clubId, tr) {
+  if (!clubId) return;
+  if (!S.trophies.has(clubId)) S.trophies.set(clubId, []);
+  S.trophies.get(clubId).push(tr);
+}
+
 // ---------------------------------------------------------------- Saisonende
 export function sortedTable(lg) {
   return [...lg.table.values()].sort((a, b) => b.pts - a.pts || (b.gf - b.ga) - (a.gf - a.ga) || b.gf - a.gf || (a.id < b.id ? -1 : 1));
@@ -942,7 +988,26 @@ function seasonEnd(S, daySeed) {
   S.lastRank = rank;
   S.cupWinners = {};
   for (const cup of S.cups) S.cupWinners[cup.id] = { winner: cup.winner, runnerUp: cup.runnerUp };
-  S.history.push({ season: S.season, champions, cups: S.cups.map((c) => ({ name: c.name, winner: c.winner ? S.teams.get(c.winner)?.name : null })) });
+  // Trophäen
+  for (const lg of S.leagues.values()) {
+    const tab = S.lastTables.get(lg.id); if (!tab?.length) continue;
+    const t = S.teams.get(tab[0].id);
+    addTrophy(S, t.clubId, { season: S.season, kind: "liga", level: lg.level, title: "Meister " + lg.name, team: t.name });
+  }
+  for (const cup of S.cups) if (cup.winner) {
+    const t = S.teams.get(cup.winner);
+    addTrophy(S, t.clubId, { season: S.season, kind: "pokal", level: { dfb: 1, lp: 4, bz: 7, kp: 9 }[cup.type], title: cup.name, team: t.name });
+  }
+  // Bundesliga: ewige Tabelle, Torschützenkönig, Rekorde
+  const blTab = S.lastTables.get("bl") || [];
+  blTab.forEach((r, i) => {
+    const e = S.eternal.get(r.id) || { id: r.id, name: r.name, seasons: 0, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, pts: 0, titles: 0 };
+    e.name = r.name; e.seasons++; e.p += r.p; e.w += r.w; e.d += r.d; e.l += r.l; e.gf += r.gf; e.ga += r.ga; e.pts += r.pts; if (i === 0) e.titles++;
+    S.eternal.set(r.id, e);
+    if (!S.records.maxPts || r.pts > S.records.maxPts.pts) S.records.maxPts = { season: S.season, name: r.name, pts: r.pts };
+  });
+  const king = topScorers(S, 1)[0];
+  S.history.push({ season: S.season, champions, blChampion: blTab[0]?.name || null, topScorer: king ? { name: king.name, team: S.teams.get(king.team)?.name, goals: king.goals } : null, cups: S.cups.map((c) => ({ name: c.name, winner: c.winner ? S.teams.get(c.winner)?.name : null })) });
   // Jahresabschluss menschlicher Vereine
   for (const c of S.clubs.values()) {
     if (!c.h || firstTeam(S, c).status === "pending") continue;
