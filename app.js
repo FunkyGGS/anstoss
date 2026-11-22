@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221252";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221252";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221252";
+import * as E from "./engine.js?v=202611221257";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221257";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221257";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -268,9 +268,11 @@ function vHome() {
   const injN = c.h.players.filter((p) => p.inj).length; const tired = c.h.players.filter((p) => !p.inj && p.fit < 50).length;
   if (injN) todo.push(`${injN} Spieler verletzt oder krank – siehe Kader.`);
   if (t.status === "active") {
-    const L = Math.min(t.level, 11), sec = c.h.sec ?? 5, pos = posOf(t);
-    if (sec < E.SEC_REQ[L]) todo.push(`Security zu schwach für die eigene Liga (Stufe ${E.SEC_REQ[L]} nötig) – im Verein erhöhen.`);
-    else if (L > 1 && sec < E.SEC_REQ[L - 1]) todo.push(`${pos && pos <= 3 ? "Achtung, Aufstiegsplatz! " : ""}Für einen Aufstieg in die ${E.LV[L - 1].name} braucht der Verein Security-Stufe ${E.SEC_REQ[L - 1]} (aktuell ${sec}) – sonst gibt es keine Lizenz.`);
+    const L = Math.min(t.level, 11), pos = posOf(t);
+    const now = E.licenseIssues(S(), c, L), up = L > 1 ? E.licenseIssues(S(), c, L - 1) : [];
+    if (now.length) todo.push(`Anforderungen der eigenen Liga nicht erfüllt: ${now.join(", ")} – im Verein nachrüsten.`);
+    else if (up.length) todo.push(`${pos && pos <= 3 ? "Achtung, Aufstiegsplatz! " : ""}Für einen Aufstieg in die ${E.LV[L - 1].name} fehlt: ${up.join(", ")} – sonst gibt es keine Lizenz (Verein → Lizenz-Check).`);
+    if (E.isWinter(S()) && E.trainingCapacity(S(), c.h) < 0.8) todo.push(`Wintersperre: Rasenplätze gesperrt, Trainingsbetrieb nur ${Math.round(E.trainingCapacity(S(), c.h) * 100)} % – ein Kunstrasen würde helfen.`);
   }
   const awayP = c.h.players.filter((p) => p.away);
   if (awayP.length) todo.push(`Heute fehlen: ${awayP.map((p) => `${p.name} (${p.away.n})`).join(", ")}.`);
@@ -479,7 +481,7 @@ function vPersonal() {
 // ------------------------------------------------------------ Verein
 function vVerein() {
   const c = myClub(), h = c.h, u = meUser(), t = E.firstTeam(S(), c);
-  const fac = [["jugend", "Jugendakademie", "Mehr und bessere Talente zum Saisonumbruch, stärkere Zweitmannschaft."], ["training", "Trainingsplätze", "Schnellere Entwicklung aller Spieler."], ["umfeld", "Umfeld & Stadion", "Mehr Zuschauer, höhere Kapazität, mehr Catering und Sponsoring."]];
+  const fac = [["jugend", "Jugendakademie", "Bessere Jugendtrainer und mehr gewünschte Jugendteams – wie viele es wirklich gibt, hängt von den Plätzen ab."]];
   const L = Math.min(t.level, 11);
   const reserves = [2, 3].map((rk) => {
     const r = h.reserves[rk]; const rt = r?.team ? team(r.team) : null;
@@ -491,7 +493,8 @@ function vVerein() {
   const ticketF = h.ticket || 1;
   return `<h2>Verein</h2><p class="sub">Investitionen werden sofort bezahlt. Laufende Kosten werden täglich abgebucht.</p>
   <div class="grid g2">
-  <div class="card"><h3>Anlagen</h3>${fac.map(([k, n, d]) => { const cost = E.facilityCost(S(), c, k); return `<div style="margin-bottom:12px"><div class="row" style="justify-content:space-between"><b>${n}</b><span class="muted">Stufe ${h.fac[k]}/10</span></div>
+  ${groundCard(c)}
+  <div class="card"><h3>Jugendakademie</h3>${fac.map(([k, n, d]) => { const cost = E.facilityCost(S(), c, k); return `<div style="margin-bottom:12px"><div class="row" style="justify-content:space-between"><b>${n}</b><span class="muted">Stufe ${h.fac[k]}/10</span></div>
     <div class="bar" style="margin:5px 0"><i style="width:${h.fac[k] * 10}%"></i></div><div class="small muted">${d}</div>
     <div style="margin-top:5px">${cost == null ? '<span class="pill ok">Maximal</span>' : btn(`Ausbauen für ${eur(cost)}`, "facility", { kind: k }, "btn sm", cost > h.cash ? "disabled" : "")}</div></div>`; }).join("")}
     <p class="small muted">Unterhalt pro Saison: ${eur((h.facInvest || 0) * 0.08)} · Jugendabteilung: ${eur(E.youthCost(S(), c))} pro Saison</p></div>
@@ -520,6 +523,33 @@ function venueList(act, list, cur, info) {
   return list.map(([n, d], i) => `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)${i === cur ? ";background:var(--accent-soft)" : ""}">
     <div style="flex:1"><b>${i}. ${esc(n)}</b>${i === cur ? ' <span class="pill">aktuell</span>' : ""}<div class="small">${esc(d)}</div><div class="small muted">${info(i)}</div></div>
     <div>${i === cur ? "" : btn(i > cur ? "Wählen" : "Wechseln", act, { lvl: i }, "btn sm", `data-confirm="${esc(n)} wählen?"`)}</div></div>`).join("");
+}
+function groundCard(c) {
+  const h = c.h, g = h.ground; if (!g) return "";
+  const t = E.firstTeam(S(), c), L = Math.min(t.level, 11), sub = E.subsidy(S(), c);
+  const costP = (type, f = 1) => eur(E.PITCH[type].cost * f * (1 - sub));
+  const pitches = g.pitches.map((p, i) => `<div style="padding:6px 0;border-top:1px solid var(--line)">
+    <div><b>${p.main ? "Hauptplatz" : `Platz ${i + 1}`}:</b> ${esc(E.PITCH[p.t].name)}${p.t === "rasen" && E.isWinter(S()) ? ' <span class="pill warn">Wintersperre</span>' : ""}<div class="small muted">${esc(E.PITCH[p.t].desc)}</div></div>
+    <div class="row" style="gap:4px;margin-top:4px;flex-wrap:wrap">${Object.keys(E.PITCH).filter((x) => x !== p.t && !(p.main && x === "tenne")).map((x) => btn(`→ ${E.PITCH[x].name.split(" ")[0]} (${costP(x, 0.8)})`, "pitch", { op: "convert", idx: i, type: x }, "btn sm", `data-confirm="${esc(E.PITCH[p.t].name)} zum ${esc(E.PITCH[x].name)} umbauen für ${costP(x, 0.8)}?"`)).join("")}
+    ${p.main ? "" : btn("Abreißen", "pitch", { op: "remove", idx: i }, "btn sm danger", 'data-confirm="Platz wirklich abreißen?"')}</div></div>`).join("");
+  const add = Object.keys(E.PITCH).map((x) => btn(`+ ${E.PITCH[x].name} (${costP(x)})`, "pitch", { op: "add", type: x }, "btn sm", `data-confirm="${esc(E.PITCH[x].name)} für ${costP(x)} bauen?"`)).join(" ");
+  const yt = E.youthTeams(h), want = 2 + (h.fac?.jugend || 0);
+  const tq = E.trainingCapacity(S(), h);
+  const lic = (Lx) => { if (Lx < 1) return ""; const iss = E.licenseIssues(S(), c, Lx); return `<tr><td>${esc(E.LV[Lx].name)}</td><td class="small">${E.STADIUM_REQ[Lx] ? `${E.STADIUM_REQ[Lx].cap.toLocaleString("de-DE")} Plätze · ${E.STADIUM_REQ[Lx].sitz.toLocaleString("de-DE")} Sitz · ${esc(E.LIGHT[E.STADIUM_REQ[Lx].light][0])}` : "keine Stadionauflagen"} · Security ${E.SEC_REQ[Lx]}</td><td>${iss.length ? `<span class="crit small">fehlt: ${esc(iss.join(", "))}</span>` : '<span class="pill ok">erfüllt</span>'}</td></tr>`; };
+  const stand = (k) => `<div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span><b>${E.STAND[k].name}:</b> ${g[k].toLocaleString("de-DE")}</span><span class="row" style="gap:4px">
+    ${btn(`+${E.STAND[k].block} (${eur(E.STAND[k].block * E.STAND[k].perSeat)})`, "stand", { kind: k, blocks: 1 }, "btn sm")} ${btn(`+${E.STAND[k].block * 4} (${eur(E.STAND[k].block * 4 * E.STAND[k].perSeat)})`, "stand", { kind: k, blocks: 4 }, "btn sm")} ${btn(`−${E.STAND[k].block}`, "stand", { kind: k, blocks: -1 }, "btn sm", 'data-confirm="Plätze zurückbauen? Es gibt kein Geld zurück."')}</span></div>`;
+  return `<div class="card" style="grid-column:1/-1"><h3>Vereinsgelände & Stadion</h3>
+    <div class="grid g2" style="gap:16px">
+    <div><b>Plätze</b>${pitches}<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">${add}</div>
+      <p class="small muted" style="margin-top:8px">${sub ? "Im Amateurbereich übernehmen Kommune und Landessportbund 50 % der Baukosten. " : ""}Pro Platz können etwa drei Mannschaften trainieren und am Wochenende spielen. Rasenplätze sind von November bis Februar gesperrt.</p>
+      <div class="kv"><label>Mannschaften</label><span>${E.seniorTeams(h)} Herren · ${yt} Jugend${yt < want ? ` <span class="warn small">(Akademie möchte ${want} – zu wenig Plätze)</span>` : ""}</span>
+      <label>Trainingsbetrieb</label><span>${Math.round(tq * 100)} %${E.isWinter(S()) ? " (Winter)" : ""} ${tq < 0.8 ? '<span class="warn small">– zu wenig Platz, Spieler entwickeln sich langsamer</span>' : ""}</span>
+      <label>Unterhalt</label><span>${eur(E.groundUpkeep(S(), c))} / Saison</span></div></div>
+    <div><b>Stadion</b> <span class="muted small">Kapazität ${E.capacity(h).toLocaleString("de-DE")} · ${Math.round(E.sitzShare(h) * 100)} % Sitzplätze (bringen 80 % mehr Eintritt)</span>${stand("steh")}${stand("sitz")}
+      <div style="margin-top:10px"><b>Flutlicht</b>${venueList("light", E.LIGHT, g.light, (i) => `Bau ${eur(E.LIGHT_COST[i] * (1 - sub))} · Unterhalt ${eur(E.LIGHT_UPKEEP[i])}/Saison`)}</div></div>
+    </div>
+    <h3 style="margin-top:14px">Lizenz-Check</h3><div class="scroll"><table><thead><tr><th>Spielklasse</th><th>Anforderungen</th><th>Status</th></tr></thead><tbody>${lic(L)}${L > 1 ? lic(L - 1) : ""}</tbody></table></div>
+    <p class="small muted">Erfüllt der Verein die Anforderungen der höheren Liga nicht, bleibt er trotz Aufstiegsplatz in seiner Liga.</p></div>`;
 }
 // ------------------------------------------------------------ Finanzen
 function vFinanzen() {

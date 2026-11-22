@@ -2,9 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221252";
-import { pickNat, natName, NATS } from "./names.js?v=202611221252";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221252";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221257";
+import { pickNat, natName, NATS } from "./names.js?v=202611221257";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221257";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -77,7 +77,7 @@ export function ensureVenue(S, c) {
   if (h.sec == null) h.sec = SEC_REQ[L];
   if (h.ticketAuto == null) h.ticketAuto = false;
 }
-export const licensedFor = (S, t, L) => { const c = S.clubs.get(t.clubId); return !c?.h || (c.h.sec ?? 5) >= SEC_REQ[Math.min(L, 12)]; };
+export const licensedFor = (S, t, L) => { const c = S.clubs.get(t.clubId); return !c?.h || licenseIssues(S, c, L).length === 0; };
 // ---------------------------------------------------------------- Verträge
 export const CT_KINDS = { fest: "Festgehalt", mix: "Ausgewogen", flex: "Leistung" };
 const CT_SPLIT = { fest: [1, 0], mix: [0.7, 0.38], flex: [0.4, 0.75] };   // Anteil fix, erwarteter Prämienanteil (bezogen auf Forderung)
@@ -489,6 +489,73 @@ export function startSeason(S) {
 }
 
 
+
+// ---------------------------------------------------------------- Vereinsgelände: Plätze, Flutlicht, Tribünen
+export const PITCH = {
+  tenne: { name: "Hartplatz (Asche)", cost: 30000, upkeep: 2000, train: 0.6, desc: "Staubig im Sommer, Schlamm im Herbst – aber immer bespielbar." },
+  rasen: { name: "Rasenplatz", cost: 150000, upkeep: 12000, train: 1, desc: "Schönster Belag, aber von November bis Februar meist gesperrt." },
+  kunst: { name: "Kunstrasenplatz", cost: 600000, upkeep: 8000, train: 1.2, desc: "Ganzjährig bespielbar, ideal für Training und Jugend." },
+};
+export const LIGHT = [
+  ["kein Flutlicht", "Im Winter endet das Training mit der Dämmerung."],
+  ["Trainingsbeleuchtung", "Vier Masten mit 80 Lux – reicht zum Kicken, nicht für Punktspiele."],
+  ["Flutlicht für den Spielbetrieb", "200 Lux, Abendspiele unter der Woche sind möglich."],
+  ["TV-taugliches Flutlicht", "1.200 Lux, flackerfrei – Fernsehkameras willkommen."],
+];
+export const LIGHT_COST = [0, 25000, 120000, 1200000];
+export const LIGHT_UPKEEP = [0, 800, 4000, 40000];
+export const STAND = { steh: { name: "Stehplätze", block: 250, perSeat: 250, upkeep: 0.5 }, sitz: { name: "Sitzplätze", block: 100, perSeat: 1500, upkeep: 3 } };
+// Stadionanforderungen je Spielklasse (Lizenz): Kapazität, Sitzplätze, Flutlicht
+export const STADIUM_REQ = { 1: { cap: 15000, sitz: 8000, light: 3 }, 2: { cap: 10000, sitz: 2000, light: 3 }, 3: { cap: 10000, sitz: 2000, light: 3 }, 4: { cap: 2500, sitz: 200, light: 2 }, 5: { cap: 500, sitz: 0, light: 1 } };
+const GROUND_DEF = { 1: [["rasen", "rasen", "rasen", "kunst", "kunst"], 3, 15000, 35000], 2: [["rasen", "rasen", "kunst", "kunst"], 3, 10000, 20000], 3: [["rasen", "rasen", "kunst"], 3, 9000, 6000],
+  4: [["rasen", "kunst"], 2, 6500, 1500], 5: [["rasen", "kunst"], 2, 2700, 300], 6: [["rasen", "tenne"], 1, 1850, 150], 7: [["rasen", "tenne"], 1, 920, 80], 8: [["rasen"], 1, 750, 50],
+  9: [["rasen"], 1, 450, 0], 10: [["rasen"], 0, 300, 0], 11: [["rasen"], 0, 300, 0] };
+export function ensureGround(S, c) {
+  const h = c.h; if (!h || h.ground) return;
+  const t = firstTeam(S, c), L = Math.min(t.level || 11, 11);
+  const [pt, light, steh, sitz] = t.founded || L > 11 ? [["rasen"], 0, 200, 0] : GROUND_DEF[L];
+  h.ground = { pitches: pt.map((x, i) => ({ t: x, main: i === 0 })), light, steh, sitz };
+}
+export const capacity = (h) => (h.ground ? h.ground.steh + h.ground.sitz : 300);
+export const sitzShare = (h) => (h.ground ? h.ground.sitz / Math.max(1, capacity(h)) : 0);
+// Ersatz für die frühere Stufe "Umfeld": Komfort des Stadions (0–10)
+export const venueScore = (h) => (h.ground ? clamp(h.ground.light * 1.5 + sitzShare(h) * 8, 0, 10) : h.fac?.umfeld || 0);
+export const isWinter = (S) => [11, 12, 1, 2].includes(gameMonth(S) || 0);
+export function seniorTeams(h) { return 1 + [2, 3].filter((rk) => h.reserves?.[rk]?.active).length; }
+export function youthTeams(h) {
+  const g = h.ground; if (!g) return 2 + Math.floor((h.fac?.jugend || 0) / 2);
+  const pitches = g.pitches.reduce((a, p) => a + (p.t === "tenne" ? 0.5 : 1), 0);
+  return clamp(Math.min(2 + (h.fac?.jugend || 0), Math.floor(pitches * 3) - seniorTeams(h)), 0, 12);
+}
+// Trainingsqualität: genug Platz für alle Teams? Im Winter fallen Rasenplätze weg.
+export function trainingCapacity(S, h) {
+  const g = h.ground; if (!g) return 1;
+  const w = isWinter(S);
+  const slots = g.pitches.reduce((a, p) => a + (w && p.t === "rasen" ? 0 : PITCH[p.t].train), 0) * 3;
+  const need = seniorTeams(h) + youthTeams(h);
+  return clamp(slots / Math.max(1, need), 0.25, 1.25);
+}
+export function groundUpkeep(S, c) {
+  const h = c.h, g = h.ground; if (!g) return 0;
+  const L = Math.min(firstTeam(S, c).level, 11), muni = L >= 7 ? 0.2 : L >= 5 ? 0.4 : 1;   // Kommune trägt im Amateurbereich viel mit
+  return eur(g.pitches.reduce((a, p) => a + PITCH[p.t].upkeep, 0) * muni + LIGHT_UPKEEP[g.light] + g.steh * STAND.steh.upkeep + g.sitz * STAND.sitz.upkeep);
+}
+export const subsidy = (S, c) => (Math.min(firstTeam(S, c).level, 11) >= 5 ? 0.5 : 0);   // Zuschuss Kommune/Landessportbund
+// Lizenzprüfung für eine Spielklasse: Liste der fehlenden Voraussetzungen
+export function licenseIssues(S, c, L) {
+  const h = c.h; if (!h) return [];
+  ensureVenue(S, c); ensureGround(S, c);
+  const out = [];
+  if ((h.sec ?? 5) < SEC_REQ[Math.min(L, 12)]) out.push(`Security-Stufe ${SEC_REQ[Math.min(L, 12)]}`);
+  const R = STADIUM_REQ[L];
+  if (R) {
+    if (capacity(h) < R.cap) out.push(`${R.cap.toLocaleString("de-DE")} Plätze`);
+    if (h.ground.sitz < R.sitz) out.push(`${R.sitz.toLocaleString("de-DE")} Sitzplätze`);
+    if (h.ground.light < R.light) out.push(LIGHT[R.light][0]);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- Europapokal (CL, EL, ECL)
 export const tm = (S, id) => S.teams.get(id) || S.fteams?.get(id);
 export const UEFA_NAMES = Object.fromEntries(Object.entries(UEFA_COUNTRIES).map(([k, v]) => [k, v[0]]));
@@ -553,9 +620,9 @@ function euroFinance(S, m, r) {
     const h = c.h, L = Math.min(t.level, 11);
     const won = home ? r.gh > r.ga : r.ga > r.gh;
     if (home && !m.neutral) {
-      const att = Math.round(Math.min(LV[L].cap * (1 + 0.15 * h.fac.umfeld), attendance(S, c, t, tm(S, oid), true) * 1.4));
+      const att = Math.round(Math.min(capacity(h), attendance(S, c, t, tm(S, oid), true) * 1.4));
       ledger(h, "in", "Zuschauer", att * LV[L].price * h.ticket * 1.6);
-      ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * 1.3 * (1 + 0.1 * h.fac.umfeld));
+      ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * 1.3 * (1 + 0.1 * venueScore(h)));
       secCheck(S, c, att);
       ledger(h, "out", "Spielbetrieb", LV[L].match * 1.2);
       h.lastAtt = att;
@@ -1068,7 +1135,7 @@ function takeOver(S, c, userId, cash) {
   const base = L <= 2 ? 4 : L <= 4 ? 3 : L <= 6 ? 2 : 1;
   const def = { praesident: base, gf: 0, headcoach: base, cotrainer: base - 1, taktik: base - 1, athletik: base - 1, twtrainer: base - 1, scout: base - 1, nlz: base - 1, arzt: base - 1, physio: base - 1, reha: base - 2, psycho: base - 2, betreuer: Math.max(1, base - 1), kasse: Math.max(1, base - 1), marketing: base - 1, presse: base - 1 };
   for (const r of ROLE_ORDER) setStaff(c, r, Math.max(0, def[r] || 0));
-  ensureVenue(S, c);
+  ensureVenue(S, c); ensureGround(S, c);
   seasonStartHuman(S, c, true);
 }
 
@@ -1076,7 +1143,7 @@ function seasonStartHuman(S, c, initial = false) {
   const h = c.h, t = firstTeam(S, c);
   const L = Math.min(t.level, 11);
   const rng = rngFrom(S.seasonSeed, S.season, "offers", c.id);
-  const base = LV[L].sponsor * (1 + 0.04 * h.fac.umfeld) * h.popularity * (1 + 0.07 * sl(h, "marketing")) * (1 + 0.01 * sl(h, "praesident"));
+  const base = LV[L].sponsor * (1 + 0.04 * venueScore(h)) * h.popularity * (1 + 0.07 * sl(h, "marketing")) * (1 + 0.01 * sl(h, "praesident"));
   h.offers = [
     { id: "o1", name: sponsorName(rng), base: eur(base * (1.05 + rng() * 0.1)), win: 0, typ: "Sicherheit" },
     { id: "o2", name: sponsorName(rng), base: eur(base * (0.85 + rng() * 0.1)), win: eur((base / 34) * (0.6 + rng() * 0.4)), typ: "Ausgewogen" },
@@ -1142,7 +1209,7 @@ export function reserveCost(S, c, rank) {
 }
 export function youthCost(S, c) {
   const L = Math.min(firstTeam(S, c).level, 11);
-  return eur(LV[L].fixed * (0.1 + 0.06 * c.h.fac.jugend));
+  return eur(LV[L].fixed * (0.04 * youthTeams(c.h) + 0.04 * c.h.fac.jugend));
 }
 
 
@@ -1280,6 +1347,7 @@ export function applyAction(S, a, userName, daySeed) {
         intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [], hires: 0, staff: {}, gf: { budget: 0, tasks: { staff: false, squad: false, rotation: false }, spent: 0 }, followDoc: false };
       for (const r of ["praesident", "headcoach", "betreuer", "kasse"]) setStaff(c, r, 1);
       c.h.cat = 1; c.h.sec = 1; c.h.ticketAuto = false;
+      c.h.ground = { pitches: [{ t: "rasen", main: true }], light: 0, steh: 200, sitz: 0 };
       FOUND_PLAN.forEach((pos, i) => c.h.players.push(genPlayer(rng, pos, LV[11].bot * (0.75 + rng() * 0.5), 17 + Math.floor(rng() * 16), "h" + id, i, { level: 11 })));
       seasonStartHuman(S, c, true);
       news(S, `Neugründung: ${name} (${kreis === "RH" ? "Region Hannover" : "Hameln-Pyrmont"}) startet zur nächsten Saison in der untersten Spielklasse.`);
@@ -1362,6 +1430,56 @@ export function applyAction(S, a, userName, daySeed) {
       }
       return true;
     }
+    case "pitch": {
+      if (!h) return fail("Kein Verein.");
+      ensureGround(S, club);
+      const g = h.ground, sub = 1 - subsidy(S, club);
+      if (P.op === "add") {
+        if (!PITCH[P.type]) return fail("Unbekannter Platz.");
+        if (g.pitches.length >= 8) return fail("Mehr Fläche gibt das Gelände nicht her.");
+        const cost = eur(PITCH[P.type].cost * sub);
+        if (h.cash < cost) return fail("Nicht genug Geld auf dem Vereinskonto.");
+        ledger(h, "out", "Investitionen", cost); g.pitches.push({ t: P.type, main: false });
+        userNews(S, a.user_id, `Neuer ${PITCH[P.type].name} für ${fmt(cost)} gebaut.`);
+        return true;
+      }
+      const p = g.pitches[Number(P.idx)]; if (!p) return fail("Platz nicht gefunden.");
+      if (P.op === "convert") {
+        if (!PITCH[P.type] || P.type === p.t) return fail("Ungültiger Umbau.");
+        if (p.main && P.type === "tenne") return fail("Auf Asche spielt die erste Mannschaft nicht.");
+        const cost = eur(PITCH[P.type].cost * 0.8 * sub);
+        if (h.cash < cost) return fail("Nicht genug Geld auf dem Vereinskonto.");
+        ledger(h, "out", "Investitionen", cost); userNews(S, a.user_id, `${PITCH[p.t].name} wird zum ${PITCH[P.type].name} umgebaut (${fmt(cost)}).`); p.t = P.type;
+        return true;
+      }
+      if (P.op === "remove") { if (p.main) return fail("Der Hauptplatz bleibt."); g.pitches.splice(Number(P.idx), 1); return true; }
+      return fail("Unbekannte Aktion.");
+    }
+    case "light": {
+      if (!h) return fail("Kein Verein.");
+      ensureGround(S, club);
+      const g = h.ground, lvl = clamp(Math.round(Number(P.lvl)) || 0, 0, 3);
+      if (lvl > g.light) {
+        const cost = eur(LIGHT_COST.slice(g.light + 1, lvl + 1).reduce((x, y) => x + y, 0) * (1 - subsidy(S, club)));
+        if (h.cash < cost) return fail("Nicht genug Geld auf dem Vereinskonto.");
+        ledger(h, "out", "Investitionen", cost);
+      }
+      g.light = lvl; userNews(S, a.user_id, `Flutlicht: ${LIGHT[lvl][0]}.`);
+      return true;
+    }
+    case "stand": {
+      if (!h) return fail("Kein Verein.");
+      ensureGround(S, club);
+      const k = STAND[P.kind] ? P.kind : null; if (!k) return fail("Unbekannt.");
+      const n = clamp(Math.round(Number(P.blocks)) || 1, -40, 40), g = h.ground;
+      if (n < 0) { g[k] = Math.max(k === "steh" ? 100 : 0, g[k] + n * STAND[k].block); return true; }
+      const cost = eur(n * STAND[k].block * STAND[k].perSeat);
+      if (h.cash < cost) return fail("Nicht genug Geld auf dem Vereinskonto.");
+      if (capacity(h) + n * STAND[k].block > 81000) return fail("Größer als der Signal Iduna Park wird es nicht.");
+      ledger(h, "out", "Investitionen", cost); g[k] += n * STAND[k].block;
+      userNews(S, a.user_id, `${n * STAND[k].block} neue ${STAND[k].name} für ${fmt(cost)} – Kapazität jetzt ${capacity(h).toLocaleString("de-DE")}.`);
+      return true;
+    }
     case "catering": {
       if (!h) return fail("Kein Verein.");
       ensureVenue(S, club);
@@ -1396,7 +1514,7 @@ export function applyAction(S, a, userName, daySeed) {
     }
     case "facility": {
       if (!h) return fail("Kein Verein.");
-      if (!["jugend", "training", "umfeld"].includes(P.kind)) return fail("Unbekannt.");
+      if (P.kind !== "jugend") return fail("Unbekannt.");
       const cost = facilityCost(S, club, P.kind);
       if (cost == null) return fail("Maximalstufe erreicht.");
       if (h.cash < cost) return fail("Nicht genug Geld auf dem Vereinskonto.");
@@ -1623,7 +1741,7 @@ function secCheck(S, c, att) {
 }
 export function ticketOptimum(S, c) {
   const h = c.h, t = firstTeam(S, c), L = Math.min(t.level, 11), save = h.ticket || 1;
-  const rev = (f) => { h.ticket = f; const att = attendance(S, c, t, null, false); return att * (LV[L].price * f + CAT_EUR[h.cat ?? 2] * (1 + 0.1 * h.fac.umfeld)); };
+  const rev = (f) => { h.ticket = f; const att = attendance(S, c, t, null, false); return att * (LV[L].price * f + CAT_EUR[h.cat ?? 2] * (1 + 0.1 * venueScore(h))); };
   let best = 1, bv = -1;
   for (let f = 0.5; f <= 2.0001; f += 0.05) { const v = rev(r2(f)); if (v > bv + 1e-9) { bv = v; best = r2(f); } }
   const cur = rev(save);
@@ -1647,8 +1765,8 @@ function attendance(S, c, t, opp, cup) {
   let posRatio = 0.5;
   if (lg) { const sorted = sortedTable(lg); const i = sorted.findIndex((x) => x.id === t.id); posRatio = sorted.length > 1 ? i / (sorted.length - 1) : 0.5; }
   const oppF = opp ? clamp(1 + (L - opp.level) * 0.25, 0.7, 3) : 1;
-  let att = LV[L].att * h.popularity * (1 + 0.06 * h.fac.umfeld) * (1 + 0.05 * sl(h, "presse")) * (1 + 0.01 * sl(h, "praesident")) * (1.25 - 0.5 * posRatio) * oppF * Math.exp(-0.6 * (h.ticket - 1)) * (cup ? 1.3 : 1) * (1 + 0.02 * ((h.cat ?? 2) - 2));
-  const cap = LV[L].cap * (1 + 0.15 * h.fac.umfeld);
+  let att = LV[L].att * h.popularity * (1 + 0.06 * venueScore(h)) * (1 + 0.05 * sl(h, "presse")) * (1 + 0.01 * sl(h, "praesident")) * (1.25 - 0.5 * posRatio) * oppF * Math.exp(-0.6 * (h.ticket - 1)) * (cup ? 1.3 : 1) * (1 + 0.02 * ((h.cat ?? 2) - 2));
+  const cap = capacity(h);
   return Math.round(clamp(att, 10, cap));
 }
 function matchFinance(S, hid, aid, r, level, isCup, cup) {
@@ -1660,9 +1778,9 @@ function matchFinance(S, hid, aid, r, level, isCup, cup) {
     if (home) {
       const att = attendance(S, c, t, S.teams.get(oid), isCup);
       const price = LV[L].price * h.ticket;
-      let ticket = att * price; if (isCup) ticket *= 0.5;
+      let ticket = att * price * (1 + 0.8 * sitzShare(h)); if (isCup) ticket *= 0.5;
       ledger(h, "in", "Zuschauer", ticket);
-      ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * (1 + 0.1 * h.fac.umfeld));
+      ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * (1 + 0.1 * venueScore(h)));
       secCheck(S, c, att);
       ledger(h, "out", "Spielbetrieb", LV[L].match);
       h.lastAtt = att;
@@ -1710,6 +1828,7 @@ function humanDaily(S, c, daySeed) {
   if (SEC_COST[h.sec]) ledger(h, "out", "Sicherheitsdienst", SEC_COST[h.sec] * per);
   if (h.ticketAuto && sl(h, "kasse")) { const adv = kasseAdvice(S, c); if (adv) h.ticket = adv.f; }
   ledger(h, "out", "Unterhalt Anlagen", (h.facInvest || 0) * 0.08 * per);
+  ledger(h, "out", "Unterhalt Gelände", groundUpkeep(S, c) * per);
   ledger(h, "out", "Jugendabteilung", youthCost(S, c) * per);
   for (const rk of [2, 3]) if (h.reserves[rk]?.active) ledger(h, "out", rk + ". Mannschaft", reserveCost(S, c, rk) * per);
   if (LV[L].tv) ledger(h, "in", "TV-Gelder", LV[L].tv * per);
@@ -1717,6 +1836,8 @@ function humanDaily(S, c, daySeed) {
   // Fitness, Verletzungen, Krankheiten, Training
   const lvl = (h.intensity || 3) - 1;
   const rng = rngFrom(daySeed, "train", c.id);
+  ensureGround(S, c);
+  const trainQ = trainingCapacity(S, h);
   const trainerF = (0.5 + 0.22 * sl(h, "cotrainer") + 0.06 * sl(h, "headcoach")) * (1 + 0.01 * sl(h, "praesident"));
   const mf = monthFactor(S);
   const illNow = h.players.filter((p) => p.inj?.ill).length;
@@ -1750,7 +1871,7 @@ function humanDaily(S, c, daySeed) {
     // Training
     if (p.inj) continue;
     let delta = 0;
-    if (p.max < p.pot && p.age < 30) delta += (p.pot - p.max) * 0.006 * (1 + 0.1 * h.fac.training) * trainerF * INT_GROW[lvl] * (0.5 + rng()) * (p.age < 21 ? 1 + 0.1 * sl(h, "nlz") : 1) * (p.pos === "TW" ? 1 + 0.15 * sl(h, "twtrainer") : 1);
+    if (p.max < p.pot && p.age < 30) delta += (p.pot - p.max) * 0.006 * (0.6 + 0.5 * trainQ) * trainerF * INT_GROW[lvl] * (0.5 + rng()) * (p.age < 21 ? 1 + 0.1 * sl(h, "nlz") : 1) * (p.pos === "TW" ? 1 + 0.15 * sl(h, "twtrainer") : 1);
     if (p.age >= 30) delta -= p.max * 0.0006 * (p.age - 29) * (0.5 + rng());
     if (delta) {
       const f = clamp((p.max + delta) / Math.max(0.5, p.max), 0.9, 1.1);
@@ -1920,7 +2041,7 @@ function seasonEnd(S, daySeed) {
     const b = before.get(t.id); if (b == null || t.status !== "active") continue;
     const c = S.clubs.get(t.clubId);
     if (c?.owner && t.rank === 1 && b === t.level && b > 1 && (rank.get(t.id)?.pos ?? 99) <= 1 && !licensedFor(S, t, b - 1))
-      userNews(S, c.owner, `Lizenz verweigert: ${t.name} hätte aufsteigen können, aber für die ${LV[b - 1].name} ist Sicherheitsstufe ${SEC_REQ[b - 1]} nötig. Der Verein bleibt in der ${S.leagues.get(t.league).name}.`);
+      userNews(S, c.owner, `Lizenz verweigert: ${t.name} hätte aufsteigen können, aber für die ${LV[b - 1].name} fehlt: ${licenseIssues(S, c, b - 1).join(", ")}. Der Verein bleibt in der ${S.leagues.get(t.league).name}.`);
     if (c?.owner && t.rank === 1 && b !== t.level && b <= 11) userNews(S, c.owner, t.level < b ? `Aufstieg! ${t.name} spielt jetzt in der ${S.leagues.get(t.league).name}.` : `Abstieg: ${t.name} spielt jetzt in der ${S.leagues.get(t.league).name}.`);
   }
   // Menschliche Vereine: Altern, Jugend, Verträge
@@ -1944,7 +2065,8 @@ function seasonEnd(S, daySeed) {
     h.players = h.players.filter((p) => !p.retiring && !leaving.includes(p));
     for (const p of h.players) { p.age++; if (!p.ct) p.wage = wageOf(p.max); }
     const nlz = sl(h, "nlz");
-    const n = 2 + Math.floor(h.fac.jugend / 3) + Math.floor(nlz / 2);
+    ensureGround(S, c);
+    const n = 1 + Math.floor(youthTeams(h) / 2) + Math.floor(nlz / 2);
     for (let i = 0; i < n; i++) {
       const base = levelMid(L) * (0.32 + 0.035 * h.fac.jugend) * (0.8 + rr() * 0.4) * (1 + 0.06 * nlz);
       const pos = POSITIONS[Math.floor(rr() * POSITIONS.length)];
