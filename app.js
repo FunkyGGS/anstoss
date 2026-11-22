@@ -485,6 +485,7 @@ function tableHtml(lg, rows, offset = 0) {
 function vLigen() {
   const c = myClub();
   const myLg = c ? E.firstTeam(S(), c).league : null;
+  if (app.sel.friendLeague) { app.sel.league = app.sel.friendLeague; app.sel.ligSeason = "0"; app.sel.friendLeague = ""; }
   const season = Number(app.sel.ligSeason || 0); // 0 = laufende Saison
   const arch = season ? S().archive.find((x) => x.season === season) : null;
   const leagueSrc = arch ? Object.entries(arch.leagues).map(([id, l]) => ({ id, name: l.name, level: l.level })) : [...S().leagues.values()].filter((l) => l.teams.length);
@@ -492,7 +493,9 @@ function vLigen() {
   const levels = [...new Set(leagueSrc.map((l) => l.level))].sort((a, b) => a - b);
   const opts = levels.map((L) => `<optgroup label="Liga ${L} – ${LVLNAME(L)}">${leagueSrc.filter((l) => l.level === L).map((l) => `<option value="${l.id}" ${l.id === sel ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</optgroup>`).join("");
   const seasonOpts = `<option value="0">Saison ${S().season} (laufend)</option>` + S().archive.slice().reverse().map((x) => `<option value="${x.season}" ${x.season === season ? "selected" : ""}>Saison ${x.season} (Abschluss)</option>`).join("");
-  const head = `<div class="row" style="justify-content:space-between;margin-bottom:10px"><h2>${esc(leagueSrc.find((l) => l.id === sel)?.name || "")}</h2><div class="row"><select data-sel="ligSeason">${seasonOpts}</select><select data-sel="league">${opts}</select></div></div>`;
+  const friends = [...S().users.values()].filter((u) => u.id !== app.me && u.clubId).map((u) => { const fc = S().clubs.get(u.clubId); const ft = fc && E.firstTeam(S(), fc); const fl = ft?.league ? S().leagues.get(ft.league) : null; return { name: u.name, club: fc?.name || "", lg: fl }; }).sort((x, y) => (x.lg?.level ?? 99) - (y.lg?.level ?? 99) || x.name.localeCompare(y.name));
+  const friendSel = friends.length ? `<select data-sel="friendLeague" title="Liga eines Mitspielers anzeigen"><option value="${sel}" selected>👥 Freunde …</option>${friends.map((f) => `<option value="${f.lg ? f.lg.id : sel}" ${f.lg ? "" : "disabled"}>${esc(f.name)} – ${esc(f.club)} (${f.lg ? esc(f.lg.name) : "wartet auf Saisonstart"})</option>`).join("")}</select>` : "";
+  const head = `<div class="row" style="justify-content:space-between;margin-bottom:10px"><h2>${esc(leagueSrc.find((l) => l.id === sel)?.name || "")}</h2><div class="row"><select data-sel="ligSeason">${seasonOpts}</select><select data-sel="league">${opts}</select>${friendSel}</div></div>`;
   const scorerTable = (list) => `<div class="scroll"><table><thead><tr><th>#</th><th>Spieler</th><th>Verein</th><th class="r">Tore</th></tr></thead><tbody>${list.map((x, i) => `<tr class="${c && c.teams.includes(x.teamId) ? "me" : ""}"><td>${i + 1}</td><td>${esc(x.name)}</td><td class="small" style="white-space:normal">${esc(x.team)}</td><td class="r"><b>${x.goals}</b></td></tr>`).join("") || '<tr><td colspan="4" class="muted">Noch keine Tore.</td></tr>'}</tbody></table></div>`;
   if (arch) {
     const L = arch.leagues[sel];
