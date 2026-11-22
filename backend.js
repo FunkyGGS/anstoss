@@ -1,6 +1,6 @@
 // Datenzugriff: Supabase (Mehrspieler) oder Solo-Modus (nur dieser Browser)
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=202611221343";
-import { hash32 } from "./engine.js?v=202611221343";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=202611221347";
+import { hash32 } from "./engine.js?v=202611221347";
 
 export const TZ = "Europe/Berlin";
 function berlinParts(date) {

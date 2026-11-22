@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221343";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221343";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221343";
+import * as E from "./engine.js?v=202611221347";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221347";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221347";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -207,6 +207,7 @@ function bindActions(root) {
       if (type === "gfSettings" && el.dataset.task) payload = { tasks: { [el.dataset.task]: el.checked } };
       if (type === "doctor") payload = { follow: el.checked };
       if (type === "ticketAuto") payload = { on: el.checked };
+      if (type === "credit") payload = { amount: Number(document.getElementById("crAmt")?.value || 0), years: Number(document.getElementById("crYrs")?.value || 3) };
       if (type === "buyPlayer" && payload.mode === "bid") payload.amount = Number(document.getElementById("bidAmt")?.value || 0);
       if (type === "humanOffer") payload.amount = Number(document.getElementById("ho-" + payload.pid)?.value || 0);
       if (type === "lineup" && el.type === "checkbox") payload = { comp: el.dataset.comp || "pokal", same: !el.checked };
@@ -619,10 +620,21 @@ function vFinanzen() {
   const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
   const list = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r">${eur(v)}</td></tr>`).join("") || '<tr><td class="muted">–</td><td></td></tr>';
   const tin = sum(h.ledger.in), tout = sum(h.ledger.out);
+  const L = Math.min(E.firstTeam(S(), c).level, 11);
   return `<h2>Finanzen</h2><p class="sub">Laufende Saison bis heute · Kontostand <b>${eur(h.cash)}</b></p>
   <div class="grid g2"><div class="card"><h3>Einnahmen</h3><table><tbody>${list(h.ledger.in)}<tr><td><b>Summe</b></td><td class="r"><b>${eur(tin)}</b></td></tr></tbody></table></div>
   <div class="card"><h3>Ausgaben</h3><table><tbody>${list(h.ledger.out)}<tr><td><b>Summe</b></td><td class="r"><b>${eur(tout)}</b></td></tr></tbody></table></div></div>
-  <div class="card" style="margin-top:14px"><h3>Ergebnis laufende Saison: <span class="${tin - tout >= 0 ? "ok" : "crit"}">${eur(tin - tout)}</span></h3></div>
+  <div class="card" style="margin-top:14px"><h3>Ergebnis laufende Saison: <span class="${tin - tout >= 0 ? "ok" : "crit"}">${eur(tin - tout)}</span></h3>
+    ${E.LV[L].tv ? `<p class="small">TV-Gelder: Faktor <b>${(h.tvFactor || 1).toFixed(2)}</b> aus der Fünfjahreswertung (Platzierungen der letzten Spielzeiten, die jüngste zählt am meisten).</p>` : ""}
+    ${L <= 4 ? `<p class="small">Lizenzierung: Zum Saisonende muss das Konto im Plus sein, sonst gibt es ${L <= 3 ? 6 : 3} Punkte Abzug.${h.penaltyShown ? ` <span class="crit">Diese Saison: ${h.penaltyShown} Punkte Abzug.</span>` : ""}</p>` : ""}
+    ${L <= 2 ? '<p class="small">Financial Fair Play (Europapokal): Gehälter, Prämien und Ablösen über 75 % der Einnahmen kosten eine Geldstrafe, über 90 % den Startplatz.</p>' : ""}</div>
+  <div class="grid g2" style="margin-top:14px">
+  <div class="card"><h3>Verträge</h3>${Object.entries(E.DEAL_NAMES).map(([k, n]) => { const d = h.deals?.[k]; const offers = h.dealOffers?.[k] || [];
+    return `<div style="padding:6px 0;border-top:1px solid var(--line)"><b>${n}</b>${d ? `<div class="small">${esc(d.name)} · ${d.base ? eur(d.base) + " / Saison" : "variabel"}${d.share ? ` · ${Math.round(d.share * 100)} % vom Fanshop-Umsatz` : ""} · bis Saison ${d.until}</div>` : offers.length ? offers.map((o) => `<div class="row" style="justify-content:space-between;gap:6px"><span class="small">${esc(o.name)} · ${o.years} J. · ${o.base ? eur(o.base) + "/Saison" : "kein Fixum"}${o.share ? ` + ${Math.round(o.share * 100)} % Umsatz` : ""}${o.cost ? ` · Einkauf ${eur(o.cost)}/Saison` : ""}</span>${btn("Unterschreiben", "deal", { slot: k, id: o.id }, "btn sm")}</div>`).join("") : '<div class="small muted">Neue Angebote zur nächsten Saison.</div>'}</div>`; }).join("")}
+    <p class="small muted">Merchandising: Eigenvertrieb bringt den vollen Fanshop-Umsatz je Heimspiel (abzüglich Einkauf), ein Lizenzpartner zahlt einen sicheren Festbetrag.</p></div>
+  <div class="card"><h3>Kredite</h3>${(h.credits || []).map((k) => `<div class="row" style="justify-content:space-between;padding:4px 0;border-top:1px solid var(--line)"><span class="small">${eur(k.amount)} seit Saison ${k.since} · ${(k.rate * 100).toFixed(1)} % · Rate ${eur(k.annuity)}/Saison · Rest <b>${eur(k.rest)}</b></span>${btn("Ablösen", "repay", { id: k.id }, "btn sm", `data-confirm="Restschuld ${eur(k.rest)} sofort zahlen?"`)}</div>`).join("") || '<p class="small muted">Keine Kredite.</p>'}
+    <div class="row" style="margin-top:8px;gap:6px"><input id="crAmt" type="number" min="1000" step="1000" placeholder="Betrag" style="width:130px"><select id="crYrs">${[1, 2, 3, 4, 5].map((y) => `<option value="${y}" ${y === 3 ? "selected" : ""}>${y} Jahre</option>`).join("")}</select>${btn("Kredit aufnehmen", "credit", {}, "btn sm")}</div>
+    <p class="small muted">Kreditrahmen: ${eur(E.creditLimit(S(), c))} · Zinssatz ${(E.creditRate(S(), c) * 100).toFixed(1)} % (teurer, wenn das Konto im Minus ist). Zins und Tilgung werden täglich abgebucht.</p></div></div>
   <div class="card" style="margin-top:14px"><h3>Jahresabschlüsse</h3>${h.annual.length ? `<div class="scroll"><table><thead><tr><th>Saison</th><th>Liga</th><th class="r">Platz</th><th class="r">Einnahmen</th><th class="r">Ausgaben</th><th class="r">Ergebnis</th><th class="r">Kontostand</th></tr></thead><tbody>
     ${h.annual.slice().reverse().map((a) => `<tr><td>${a.season}</td><td class="small">${esc(a.league)}</td><td class="r">${a.pos != null ? a.pos + 1 : "–"}</td><td class="r">${eur(sum(a.in))}</td><td class="r">${eur(sum(a.out))}</td><td class="r ${a.result >= 0 ? "ok" : "crit"}">${eur(a.result)}</td><td class="r">${eur(a.cash)}</td></tr>`).join("")}</tbody></table></div>
     <details style="margin-top:8px"><summary class="muted small">Details letzter Abschluss</summary>${(() => { const a = h.annual.at(-1); return `<div class="grid g2" style="margin-top:8px"><table><tbody>${list(a.in)}</tbody></table><table><tbody>${list(a.out)}</tbody></table></div>`; })()}</details>`

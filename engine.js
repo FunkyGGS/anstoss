@@ -2,9 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221343";
-import { pickNat, natName, NATS } from "./names.js?v=202611221343";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221343";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221347";
+import { pickNat, natName, NATS } from "./names.js?v=202611221347";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221347";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -175,6 +175,62 @@ function answerRequest(S, c, yes) {
   h.request = null;
   if (yes) { ledger(h, "out", "Prämien Spieler", r.amount); for (const p of h.players) moodAdd(p, 8); h.chem = clamp((h.chem ?? 60) + 5, 20, 100); userNews(S, c.owner, `Prämie zugesagt – die Kabine feiert.`); }
   else { for (const p of h.players) moodAdd(p, -6); h.chem = clamp((h.chem ?? 60) - 6, 20, 100); userNews(S, c.owner, `Prämie verweigert – im Mannschaftsrat brodelt es.`); }
+}
+
+
+// ---------------------------------------------------------------- Profi-Finanzen: Ausrüster, Stadionname, Merchandising, Kredite
+export const DEAL_NAMES = { kit: "Ausrüster", naming: "Stadionname", merch: "Merchandising" };
+const KIT_PRO = ["Strida", "Vantor Sports", "Kaiman", "Nordwind Athletics", "Pulsar", "Hexa Sport", "Aurora Athletic"];
+const KIT_AMA = ["Sporthaus Hartmann", "Teamsport Krüger", "Ballsport Nord", "Sport-Center Lange", "Trikotwelt", "Vereinsausstatter Meyer"];
+export const MERCH_EUR = { 1: 9, 2: 5, 3: 3, 4: 1.5, 5: 0.8, 6: 0.5, 7: 0.3, 8: 0.2, 9: 0.15, 10: 0.1, 11: 0.1 };
+function dealOffers(S, c, k, rng) {
+  const h = c.h, L = Math.min(firstTeam(S, c).level, 11);
+  const mk = (1 + 0.07 * sl(h, "marketing")) * h.popularity;
+  const yrs = [1, 2, 3];
+  if (k === "kit") return yrs.map((y, i) => ({ id: k + i, name: (L <= 3 ? KIT_PRO : KIT_AMA)[Math.floor(rng() * (L <= 3 ? KIT_PRO : KIT_AMA).length)], years: y, base: eur(LV[L].sponsor * 0.15 * mk * (0.9 + 0.08 * y + rng() * 0.15)) }));
+  if (k === "naming") {
+    const capF = Math.sqrt(capacity(h) / Math.max(300, LV[L].cap));
+    return yrs.map((y, i) => { const n = sponsorName(rng).split(" ")[0]; return { id: k + i, name: `${n}-${["Arena", "Sportpark", "Stadion", "Park"][Math.floor(rng() * 4)]}`, years: y, base: eur(LV[L].sponsor * 0.22 * mk * capF * (0.85 + 0.1 * y + rng() * 0.15)) }; });
+  }
+  const est = LV[L].att * 17 * MERCH_EUR[L] * h.popularity;
+  return [
+    { id: "merch0", name: "Eigenvertrieb (Fanshop & Online)", years: 1, base: 0, share: 1, cost: eur(est * 0.25) },
+    { id: "merch1", name: "Lizenzpartner (Festbetrag)", years: 2, base: eur(est * 0.75 * mk * (0.9 + rng() * 0.2)), share: 0, cost: 0 },
+    { id: "merch2", name: "Partner mit Umsatzbeteiligung", years: 2, base: eur(est * 0.35 * mk), share: 0.5, cost: 0 },
+  ];
+}
+function dealsDaily(S, c, per, L) {
+  const h = c.h, d = h.deals || {};
+  if (d.kit) ledger(h, "in", "Ausrüster", d.kit.base * per);
+  if (d.naming) ledger(h, "in", "Namensrechte", d.naming.base * per);
+  if (d.merch) { if (d.merch.base) ledger(h, "in", "Merchandising", d.merch.base * per); if (d.merch.cost) ledger(h, "out", "Merchandising (Einkauf)", d.merch.cost * per); }
+}
+// Merch-Umsatz je Heimspiel (variabel, je nach Modell)
+function merchSale(S, c, att) {
+  const h = c.h, d = h.deals?.merch; const L = Math.min(firstTeam(S, c).level, 11);
+  const share = d ? d.share : 0.3;   // ohne Vertrag: kleiner Verkaufsstand
+  if (share) ledger(h, "in", "Merchandising", att * MERCH_EUR[L] * h.popularity * share * (1 + 0.07 * sl(h, "marketing")));
+}
+export function creditLimit(S, c) {
+  const h = c.h, L = Math.min(firstTeam(S, c).level, 11);
+  const last = h.annual.at(-1); const rev = last ? Object.values(last.in).reduce((a, b) => a + b, 0) : LV[L].sponsor + LV[L].tv;
+  const debt = (h.credits || []).reduce((a, x) => a + x.rest, 0);
+  return eur(Math.max(0, rev * 1.2 - debt));
+}
+export function creditRate(S, c) {
+  const L = Math.min(firstTeam(S, c).level, 11);
+  return r2((L <= 2 ? 0.045 : L <= 4 ? 0.06 : 0.075) + (c.h.cash < 0 ? 0.02 : 0));
+}
+function creditDaily(S, c, per) {
+  const h = c.h; if (!h.credits?.length) return;
+  for (const k of h.credits) {
+    const pay = Math.min(k.rest + k.rest * k.rate * per, k.annuity * per);
+    const interest = k.rest * k.rate * per;
+    ledger(h, "out", "Zinsen", interest);
+    ledger(h, "out", "Tilgung", Math.max(0, pay - interest));
+    k.rest = eur(Math.max(0, k.rest - Math.max(0, pay - interest)));
+  }
+  h.credits = h.credits.filter((k) => k.rest > 0);
 }
 
 // ---------------------------------------------------------------- Catering & Security
@@ -678,6 +734,7 @@ export function licenseIssues(S, c, L) {
   ensureVenue(S, c); ensureGround(S, c);
   const out = [];
   if ((h.sec ?? 5) < SEC_REQ[Math.min(L, 12)]) out.push(`Security-Stufe ${SEC_REQ[Math.min(L, 12)]}`);
+  if (L <= 4 && h.cash < 0) out.push("positiver Kontostand (Liquiditätsnachweis)");
   const R = STADIUM_REQ[L];
   if (R) {
     if (capacity(h) < R.cap) out.push(`${R.cap.toLocaleString("de-DE")} Plätze`);
@@ -695,6 +752,18 @@ function setupEuro(S) {
   const rng = seasonRng(S, "euro");
   for (const t of S.fteams.values()) t.str = r2(clamp(t.base + gauss(rng) * 1.5, 30, 95));
   let ger = S.euro.next;
+  if (ger) {
+    // Financial Fair Play: Personal- und Transferkosten über 90 % der Einnahmen → Ausschluss, über 75 % → Geldstrafe
+    for (const k of Object.keys(ger)) ger[k] = ger[k].filter((id) => {
+      const t = S.teams.get(id), c = S.clubs.get(t?.clubId); const last = c?.h?.annual?.at(-1); if (!last) return true;
+      const rev = Object.values(last.in).reduce((a, b) => a + b, 0) - (last.in["Einlagen Investor"] || 0) - (last.in["Kredite"] || 0);
+      const cost = (last.out["Gehälter Spieler"] || 0) + (last.out["Prämien Spieler"] || 0) + (last.out["Transfers"] || 0);
+      const ratio = cost / Math.max(1, rev);
+      if (ratio > 0.9) { userNews(S, c.owner, `Financial Fair Play: Kosten bei ${Math.round(ratio * 100)} % der Einnahmen – ${t.name} wird vom Europapokal ausgeschlossen!`); return false; }
+      if (ratio > 0.75) { const fine = eur(rev * 0.05); ledger(c.h, "out", "Strafen & Auflagen", fine); userNews(S, c.owner, `Financial Fair Play: Kosten bei ${Math.round(ratio * 100)} % der Einnahmen – Geldstrafe ${fmt(fine)}.`); }
+      return true;
+    });
+  }
   if (!ger) {
     const byName = (n) => [...S.teams.values()].find((t) => t.name === n && t.status === "active" && t.level === 1 && t.rank === 1)?.id;
     ger = Object.fromEntries(Object.entries(GER_SEASON1).map(([k, v]) => [k, v.map(byName).filter(Boolean)]));
@@ -754,6 +823,7 @@ function euroFinance(S, m, r) {
       const att = Math.round(Math.min(capacity(h), attendance(S, c, t, tm(S, oid), true) * 1.4));
       ledger(h, "in", "Zuschauer", att * LV[L].price * h.ticket * 1.6);
       ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * 1.3 * (1 + 0.1 * venueScore(h)));
+      merchSale(S, c, att * 1.5);
       secCheck(S, c, att);
       ledger(h, "out", "Spielbetrieb", LV[L].match * 1.2);
       h.lastAtt = att;
@@ -1283,6 +1353,19 @@ function seasonStartHuman(S, c, initial = false) {
   ];
   h.sponsor = null;
   h.trainers = [];
+  // TV-Gelder nach Fünfjahreswertung (gewichtet, neueste Saison zählt am meisten)
+  const hist = h.tvHist || [];
+  if (LV[L].tv && hist.length) {
+    let ws = 0, sum = 0; hist.slice().reverse().forEach((x, i) => { const w = 5 - i; ws += w; sum += w * ((x.level - 1) * 18 + (x.pos ?? 17)); });
+    const rel = (sum / ws - (L - 1) * 18) / 18;
+    h.tvFactor = r2(clamp(1.3 - 0.6 * rel, 0.6, 1.6));
+  } else h.tvFactor = LV[L].tv ? 0.7 : 1;
+  // Verträge: Ausrüster, Stadionname, Merchandising
+  h.deals = h.deals || {};
+  for (const k of Object.keys(h.deals)) if (h.deals[k] && h.deals[k].until < S.season) { userNews(S, c.owner, `Vertrag ausgelaufen: ${DEAL_NAMES[k]} (${h.deals[k].name}).`); h.deals[k] = null; }
+  h.dealOffers = {};
+  for (const k of Object.keys(DEAL_NAMES)) if (!h.deals[k]) h.dealOffers[k] = dealOffers(S, c, k, rng);
+  if (h.penalty && t.league) { const row = S.leagues.get(t.league).table.get(t.id); if (row) row.pts -= h.penalty; h.penaltyShown = h.penalty; h.penalty = 0; }
   if (h.gf) { h.gf.spent = 0; h.gf.replan = true; }
   if (!initial) h.ledger = newLedger();
 }
@@ -1610,6 +1693,38 @@ export function applyAction(S, a, userName, daySeed) {
       if (capacity(h) + n * STAND[k].block > 81000) return fail("Größer als der Signal Iduna Park wird es nicht.");
       ledger(h, "out", "Investitionen", cost); g[k] += n * STAND[k].block;
       userNews(S, a.user_id, `${n * STAND[k].block} neue ${STAND[k].name} für ${fmt(cost)} – Kapazität jetzt ${capacity(h).toLocaleString("de-DE")}.`);
+      return true;
+    }
+    case "deal": {
+      if (!h) return fail("Kein Verein.");
+      const k = P.slot; if (!DEAL_NAMES[k]) return fail("Unbekannt.");
+      if (h.deals?.[k]) return fail("Dafür läuft bereits ein Vertrag.");
+      const o = (h.dealOffers?.[k] || []).find((x) => x.id === P.id); if (!o) return fail("Angebot nicht gefunden.");
+      h.deals = h.deals || {};
+      h.deals[k] = { ...o, until: S.season + o.years - 1 };
+      h.dealOffers[k] = null;
+      userNews(S, a.user_id, `${DEAL_NAMES[k]}: Vertrag mit ${o.name} bis Saison ${h.deals[k].until}.`);
+      return true;
+    }
+    case "credit": {
+      if (!h) return fail("Kein Verein.");
+      const amount = eur(Number(P.amount) || 0), yrs = clamp(Math.round(Number(P.years)) || 3, 1, 5);
+      if (amount < 1000) return fail("Mindestens 1.000 €.");
+      if (amount > creditLimit(S, club)) return fail("Die Bank gibt nicht so viel – Kreditrahmen überschritten.");
+      const rate = creditRate(S, club);
+      const annuity = eur(amount * rate / (1 - Math.pow(1 + rate, -yrs)));
+      h.credits = h.credits || [];
+      h.credits.push({ id: "k" + a.id, amount, rest: amount, rate, years: yrs, annuity, since: S.season });
+      ledger(h, "in", "Kredite", amount);
+      userNews(S, a.user_id, `Kredit über ${fmt(amount)} aufgenommen: ${Math.round(rate * 1000) / 10} % Zinsen, ${yrs} Jahre, Rate ${fmt(annuity)} pro Saison.`);
+      return true;
+    }
+    case "repay": {
+      if (!h) return fail("Kein Verein.");
+      const k = (h.credits || []).find((x) => x.id === P.id); if (!k) return fail("Kredit nicht gefunden.");
+      if (h.cash < k.rest) return fail("Nicht genug Geld für die Ablösung.");
+      ledger(h, "out", "Tilgung", k.rest); h.credits = h.credits.filter((x) => x !== k);
+      userNews(S, a.user_id, `Kredit vorzeitig abgelöst.`);
       return true;
     }
     case "catering": {
@@ -2023,6 +2138,7 @@ function matchFinance(S, hid, aid, r, level, isCup, cup) {
       let ticket = att * price * (1 + 0.8 * sitzShare(h)); if (isCup) ticket *= 0.5;
       ledger(h, "in", "Zuschauer", ticket);
       ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * (1 + 0.1 * venueScore(h)));
+      merchSale(S, c, att);
       secCheck(S, c, att);
       ledger(h, "out", "Spielbetrieb", LV[L].match);
       h.lastAtt = att;
@@ -2073,7 +2189,9 @@ function humanDaily(S, c, daySeed) {
   ledger(h, "out", "Unterhalt Gelände", groundUpkeep(S, c) * per);
   ledger(h, "out", "Jugendabteilung", youthCost(S, c) * per);
   for (const rk of [2, 3]) if (h.reserves[rk]?.active) ledger(h, "out", rk + ". Mannschaft", reserveCost(S, c, rk) * per);
-  if (LV[L].tv) ledger(h, "in", "TV-Gelder", LV[L].tv * per);
+  if (LV[L].tv) ledger(h, "in", "TV-Gelder", LV[L].tv * per * (h.tvFactor || 1));
+  dealsDaily(S, c, per, L);
+  creditDaily(S, c, per);
   ledger(h, "in", "Sponsoring", (h.sponsor ? h.sponsor.base : LV[L].sponsor * 0.35 * (1 + 0.07 * sl(h, "marketing"))) * per);
   // Fitness, Verletzungen, Krankheiten, Training
   const lvl = (h.intensity || 3) - 1;
@@ -2244,7 +2362,10 @@ function seasonEnd(S, daySeed) {
     const L = c.h.ledger;
     const tin = Object.values(L.in).reduce((a, b) => a + b, 0), tout = Object.values(L.out).reduce((a, b) => a + b, 0);
     const t = firstTeam(S, c);
-    c.h.annual.push({ season: S.season, in: L.in, out: L.out, result: tin - tout, cash: c.h.cash, league: t.league ? S.leagues.get(t.league).name : "–", pos: rank.get(t.id)?.pos });
+    c.h.annual.push({ season: S.season, in: L.in, out: L.out, result: tin - tout, cash: c.h.cash, league: t.league ? S.leagues.get(t.league).name : "–", level: t.level, pos: rank.get(t.id)?.pos });
+    c.h.tvHist = [...(c.h.tvHist || []), { season: S.season, level: t.level, pos: rank.get(t.id)?.pos ?? 17 }].slice(-5);
+    // Lizenzierung: Liquidität in den DFB/DFL-Ligen
+    if (t.level <= 4 && c.h.cash < 0) { c.h.penalty = t.level <= 3 ? 6 : 3; userNews(S, c.owner, `Lizenz nur unter Auflagen: Das Konto ist im Minus. Nächste Saison startet ${c.name} mit ${c.h.penalty} Punkten Abzug.`); }
   }
   // KI-Stärke driftet Richtung Ligamittel, leichte Zufallsänderung
   const rng = rngFrom(daySeed, "drift");
