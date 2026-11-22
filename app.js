@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221213";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221213";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221213";
+import * as E from "./engine.js?v=202611221223";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221223";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221223";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -302,7 +302,7 @@ function vKader() {
   const sel = (key, opts, cur) => `<select data-act="tactic" data-key="${key}">${opts.map(([v, n]) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${n}</option>`).join("")}</select>`;
   const open = app.sel.player;
   const detail = (p) => `<tr><td colspan="14" style="white-space:normal;background:var(--surface2);padding:0"><div style="position:sticky;left:0;width:min(calc(100vw - 64px),1040px);padding:10px">
-    <div class="row" style="justify-content:space-between"><b>${esc(p.name)} · ${E.POS_NAMES[p.pos]}</b><span class="small muted">Potenzial ${p.age < 30 ? potTxt(h, p) : "–"} · Marktwert ${eur(E.valueOf(p))} · Gehalt ${eur(p.wage)}/Saison</span></div>
+    <div class="row" style="justify-content:space-between"><b>${esc(p.name)} · ${E.POS_NAMES[p.pos]}${p.nat ? " · " + esc(E.NAT_NAMES[p.nat] || p.nat) : ""}</b><span class="small muted">Potenzial ${p.age < 30 ? potTxt(h, p) : "–"} · Marktwert ${eur(E.valueOf(p))} · Gehalt ${eur(p.wage)}/Saison</span></div>
     <div class="grid g3" style="gap:4px 16px;margin:8px 0">${E.ATTRS.map((k) => `<div class="row" style="gap:6px"><span class="small" style="width:108px">${E.ATTR_NAMES[k]}</span><span class="bar" style="flex:1"><i style="width:${p.a[k]}%"></i></span><b class="small" style="width:40px;text-align:right">${st(p.a[k])}</b></div>`).join("")}</div>
     <div class="small muted">Stärke auf anderen Positionen: ${E.POSITIONS.filter((x) => x !== p.pos).map((x) => ({ x, v: E.posStrength(p, x) })).sort((a, b) => b.v - a.v).slice(0, 4).map((o) => `${o.x} ${st(o.v)}`).join(" · ")}</div>
     <div class="small muted">Karriere: ${p.c.apps} Spiele, ${p.c.g} Tore, ${p.c.as || 0} Vorlagen, ${p.c.zw || 0} gewonnene Zweikämpfe, ${p.c.y} Gelb, ${p.c.r} Rot</div>
@@ -310,7 +310,8 @@ function vKader() {
     ${ctBox(h, p)}
     <div class="row" style="margin-top:8px;gap:6px"><input id="rn-${esc(p.id)}" maxlength="40" value="${esc(p.name)}" style="width:200px">${btn("Umbenennen", "rename", { what: "player", id: p.id })}</div>
     <div style="margin-top:6px">${btn("Verkaufen", "sellPlayer", { id: p.id }, "btn sm", `data-confirm="${esc(p.name)} für ${eur(E.valueOf(p) * 0.8)} verkaufen?"`)} ${btn("Entlassen", "releasePlayer", { id: p.id }, "btn sm danger", `data-confirm="${esc(p.name)} entlassen? Abfindung ${eur(p.wage * 0.5 * (Math.max(0, (p.ct?.until ?? S().season) - S().season) + Math.max(0, 34 - S().day) / 34))} (halbes Restgehalt)."`)}</div></div></td></tr>`;
-  return `<h2>Kader</h2><p class="sub">${h.players.length} Spieler · Gehälter ${eur(wages)}/Saison · Startelf <b>${st(xi.str)}</b> aktuell / ${st(xi.max)} max · Ø Fitness ${Math.round(avgFit)}${inj ? ` · <span class="crit">${inj} verletzt/krank</span>` : ""}${ban ? ` · <span class="warn">${ban} gesperrt</span>` : ""}</p>
+  const foreignN = h.players.filter((p) => p.nat && p.nat !== "GER").length;
+  return `<h2>Kader</h2><p class="sub">${h.players.length} Spieler (${foreignN} Ausländer) · Gehälter ${eur(wages)}/Saison · Startelf <b>${st(xi.str)}</b> aktuell / ${st(xi.max)} max · Ø Fitness ${Math.round(avgFit)}${inj ? ` · <span class="crit">${inj} verletzt/krank</span>` : ""}${ban ? ` · <span class="warn">${ban} gesperrt</span>` : ""}</p>
   <div class="card" style="margin-bottom:14px"><div class="grid g2" style="gap:10px">
     <div class="row"><label class="muted" style="width:110px">Formation</label>${sel("formation", Object.keys(E.FORMATIONS).map((f) => [f, f]), h.formation)}</div>
     <div class="row"><label class="muted" style="width:110px">Spielweise</label>${sel("tactic", Object.keys(E.TACTICS).map((f) => [f, f]), h.tactic)}</div>
@@ -321,13 +322,14 @@ function vKader() {
   <p class="small muted" style="margin:10px 0 0">Hohe Intensität bringt etwas mehr Leistung und schnellere Entwicklung, kostet aber mehr Fitness und erhöht das Verletzungsrisiko. Pausen bauen Fitness wieder auf. Hohe Aggressivität gewinnt mehr Zweikämpfe (je nach Zweikampfstärke), bringt aber Karten und Sperren. Die Startelf stellt sich automatisch aus den fittesten und stärksten Spielern zusammen.</p></div>
   <div class="row" style="margin-bottom:8px"><span class="muted small">Sortieren:</span><div class="seg">${[["pos", "Position"], ["max", "Stärke"], ["fit", "Fitness"], ["form", "Form"], ["ct", "Vertrag"], ["g", "Tore"]].map(([k, n]) => `<button data-sel="kaderSort" data-v="${k}" aria-pressed="${sortBy === k}">${n}</button>`).join("")}</div><span class="small muted">Tippe auf einen Spieler für Details.</span></div>
   <div class="card scroll"><table><thead><tr><th>Pos</th><th>Name</th><th class="r">Alter</th><th>Fitness</th><th class="r">Aktuell</th><th class="r">Max</th><th>Form</th><th>Status</th><th>Vertrag</th><th class="r">Sp</th><th class="r">Tore</th><th class="r">Vorl.</th><th class="r">Gelb</th><th class="r">Rot</th></tr></thead><tbody>
-  ${ps.map((p) => `<tr class="${slotOf.has(p.id) ? "xi" : ""}" data-sel="player" data-v="${open === p.id ? "" : esc(p.id)}" style="cursor:pointer"><td>${p.pos}${slotOf.has(p.id) && slotOf.get(p.id) !== p.pos ? `<span class="small muted">→${slotOf.get(p.id)}</span>` : ""}</td><td>${esc(p.name)}</td><td class="r">${p.age}</td><td>${fitBar(p.fit)}</td>
+  ${ps.map((p) => `<tr class="${slotOf.has(p.id) ? "xi" : ""}" data-sel="player" data-v="${open === p.id ? "" : esc(p.id)}" style="cursor:pointer"><td>${p.pos}${slotOf.has(p.id) && slotOf.get(p.id) !== p.pos ? `<span class="small muted">→${slotOf.get(p.id)}</span>` : ""}</td><td>${esc(p.name)}${natTag(p)}</td><td class="r">${p.age}</td><td>${fitBar(p.fit)}</td>
     <td class="r"><b>${st(p.inj ? 0 : E.curStrength(p))}</b></td><td class="r muted">${st(p.max)}</td><td>${formIcon(p.form)}</td><td>${statusOf(p)}${doc(p)}${p.retiring ? ' <span class="pill">Karriereende</span>' : ""}</td><td class="small ${p.ct && p.ct.until <= S().season ? "warn" : ""}">${p.ct ? `bis S${p.ct.until}${p.ct.kind !== "fest" ? " · " + E.CT_KINDS[p.ct.kind] : ""}` : "–"}</td><td class="r">${p.s.apps}</td><td class="r">${p.s.g}</td><td class="r">${p.s.as || 0}</td><td class="r">${p.s.y}</td><td class="r">${p.s.r}</td></tr>${open === p.id ? detail(p) : ""}`).join("")}
   </tbody></table></div><p class="small muted">Blau markiert: aktuelle Startelf (→ andere Position). Statistik der laufenden Saison inklusive Pokalspielen.</p>`;
 }
 
 
 
+const natTag = (p) => p.nat && p.nat !== "GER" ? ` <span class="muted small" title="${esc(E.NAT_NAMES[p.nat] || p.nat)}">${p.nat}</span>` : "";
 // ------------------------------------------------------------ Form & Verträge
 function formIcon(f = 0) { const [i, col] = f >= 0.5 ? ["⬆", "var(--ok)"] : f >= 0.15 ? ["↗", "var(--ok)"] : f > -0.15 ? ["→", "var(--muted)"] : f > -0.5 ? ["↘", "var(--warn)"] : ["⬇", "var(--crit)"]; return `<span title="${E.formLabel(f)}" style="color:${col};font-weight:700">${i}</span>`; }
 function ctPanel(p, mode, h) {
@@ -399,7 +401,7 @@ function vTransfer() {
   <div class="grid g2">
   <div class="card"><h3>Scouting-Bericht</h3>${scoutCard(h, market)}</div>
   <div class="card"><h3>Transfermarkt</h3><div class="scroll"><table><thead><tr><th>Pos</th><th>Name</th><th class="r">Alter</th><th class="r">Stärke</th><th>Verein</th><th class="r">Ablöse</th><th></th></tr></thead><tbody>
-  ${market.map((p) => `<tr><td>${p.pos}</td><td>${esc(p.name)}</td><td class="r">${p.age}</td><td class="r"><b>${st(p.max)}</b><div class="small muted">Pot. ${potTxt(h, p)}</div><div class="small muted">${["spd", "tec", "zwk", "abs"].map((k) => E.ATTR_NAMES[k].slice(0, 3) + " " + Math.round(p.a[k])).join(" · ")}</div></td><td class="small">${p.from ? esc(team(p.from).name) : "vereinslos"}</td><td class="r">${eur(p.price)}</td>
+  ${market.map((p) => `<tr><td>${p.pos}</td><td>${esc(p.name)}${natTag(p)}</td><td class="r">${p.age}</td><td class="r"><b>${st(p.max)}</b><div class="small muted">Pot. ${potTxt(h, p)}</div><div class="small muted">${["spd", "tec", "zwk", "abs"].map((k) => E.ATTR_NAMES[k].slice(0, 3) + " " + Math.round(p.a[k])).join(" · ")}</div></td><td class="small">${p.from ? esc(team(p.from).name) : "vereinslos"}</td><td class="r">${eur(p.price)}</td>
     <td><button class="btn sm pri" data-sel="buy" data-v="${esc(p.id)}" ${p.price > h.cash ? "disabled" : ""}>Kaufen …</button></td></tr>`).join("")}
   </tbody></table></div><p class="small muted">Beim Kauf wählst du Laufzeit und eines von drei Vertragsangeboten (fest, ausgewogen, leistungsabhängig). Kader max. 30 Spieler. Mehr Scouts = mehr Angebote und genauere Potenzialschätzung.</p></div></div>`;
 }
@@ -418,7 +420,7 @@ function scoutCard(h, market) {
   const weakest = E.POSITIONS.map((x) => ({ x, n: cnt[x] || 0, best: Math.max(0, ...h.players.filter((p) => p.pos === x).map((p) => p.max)) })).sort((a, b) => a.n - b.n || a.best - b.best)[0];
   const recs = market.filter((p) => p.price <= h.cash * 0.6).map((p) => { const e = E.potEstimate(h, p); return { p, score: p.max + ((e.lo + e.hi) / 2 - p.max) * 0.25 * (p.age < 25 ? 1 : 0.3) + (p.pos === weakest.x ? 3 : 0) }; }).sort((a, b) => b.score - a.score).slice(0, lvl >= 3 ? 3 : 1);
   return `<p class="small muted" style="margin-top:0">${esc(h.staff.scout.name)} (${ROLES.scout.lv[lvl - 1][0]}) meint: ${lvl >= 2 ? `Dünnste Stelle im Kader ist <b>${E.POS_NAMES[weakest.x]}</b>.` : "„Ich hab da einen gesehen, der lief echt schnell.“"}</p>
-    ${recs.length ? recs.map(({ p }) => `<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:6px 0"><span><b>${esc(p.name)}</b> <span class="small muted">${p.pos}, ${p.age} J., Stärke ${st(p.max)}, Potenzial ${potTxt(h, p)}</span></span><span>${eur(p.price)} <button class="btn sm pri" data-sel="buy" data-v="${esc(p.id)}" ${p.price > h.cash ? "disabled" : ""}>Kaufen …</button></span></div>`).join("") : '<p class="muted">Heute keine bezahlbare Empfehlung.</p>'}`;
+    ${recs.length ? recs.map(({ p }) => `<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:6px 0"><span><b>${esc(p.name)}</b>${natTag(p)} <span class="small muted">${p.pos}, ${p.age} J., Stärke ${st(p.max)}, Potenzial ${potTxt(h, p)}</span></span><span>${eur(p.price)} <button class="btn sm pri" data-sel="buy" data-v="${esc(p.id)}" ${p.price > h.cash ? "disabled" : ""}>Kaufen …</button></span></div>`).join("") : '<p class="muted">Heute keine bezahlbare Empfehlung.</p>'}`;
 }
 function oppCard(c, t, m) {
   const oppId = m.h === t.id ? m.a : m.h;

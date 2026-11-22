@@ -2,8 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221213";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221213";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221223";
+import { pickNat, natName, NATS } from "./names.js?v=202611221223";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221223";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -761,9 +762,13 @@ function makeAttrs(rng, pos, target) {
   return a;
 }
 const newStats = () => ({ apps: 0, g: 0, y: 0, r: 0, as: 0, zw: 0 });
-function genPlayer(rng, pos, str, age, idPrefix, i) {
+export const NAT_NAMES = Object.fromEntries(Object.entries(NATS).map(([k, v]) => [k, v[1]]));
+function genPlayer(rng, pos, str, age, idPrefix, i, ctx) {
   str = clamp(str, 0.5, 99.99);
-  const p = { id: idPrefix + ":" + i, name: nameFrom(rng), pos, age, a: makeAttrs(rng, pos, str), fit: 100, inj: null, ban: 0, s: newStats(), c: newStats() };
+  rng(); rng();   // Platzhalter: hält die übrige Zufallsfolge stabil
+  const nr = rngFrom("nat", idPrefix, i);
+  const nat = pickNat(nr, ctx || {});
+  const p = { id: idPrefix + ":" + i, name: natName(nr, nat), nat, pos, age, a: makeAttrs(rng, pos, str), fit: 100, inj: null, ban: 0, s: newStats(), c: newStats() };
   p.max = r2(posStrength(p, pos));
   p.pot = r2(clamp(p.max * (age < 21 ? 1.25 + rng() * 0.35 : age < 25 ? 1.08 + rng() * 0.2 : 1 + rng() * 0.05), p.max, 99.99));
   p.wage = wageOf(p.max);
@@ -782,7 +787,7 @@ export function aiSquad(S, t) {
     let m = AI_STARTERS.has(i) ? 0.94 + rng() * 0.12 : 0.74 + rng() * 0.2;
     if (rng() < 0.012 && t.level <= 2) m *= 1.07;
     const age = 18 + Math.floor(rng() * 17);
-    out.push(genPlayer(rng, pos, t.str * m, age, t.id + ":" + S.season, i));
+    out.push(genPlayer(rng, pos, t.str * m, age, t.id + ":" + S.season, i, { cc: t.cc || "Ger", level: t.level }));
   });
   S.squadCache?.set(key, out);
   return out.filter((p) => !S.taken.has(p.id));
@@ -1160,7 +1165,7 @@ function gfDaily(S, c, daySeed) {
         const pick = g >= 3 ? mk.sort((a, b) => b.max / Math.max(1, b.price) - a.max / Math.max(1, a.price))[0] : mk[Math.floor(rng() * mk.length)];
         ledger(h, "out", "Transfers", pick.price); h.gf.spent = (h.gf.spent || 0) + pick.price;
         S.taken.add(pick.id); S.freeAgents = S.freeAgents.filter((x) => x.id !== pick.id);
-        h.players.push({ id: "h" + c.id + ":" + pick.id, name: pick.name, pos: pick.pos, age: pick.age, a: { ...pick.a }, max: pick.max, pot: pick.pot, wage: wageOf(pick.max), fit: 100, inj: null, ban: 0, s: newStats(), c: newStats() });
+        h.players.push({ id: "h" + c.id + ":" + pick.id, name: pick.name, nat: pick.nat, pos: pick.pos, age: pick.age, a: { ...pick.a }, max: pick.max, pot: pick.pot, wage: wageOf(pick.max), fit: 100, inj: null, ban: 0, s: newStats(), c: newStats() });
         userNews(S, c.owner, `GF Sport verpflichtet ${pick.name} (${pick.pos}, ${pick.max.toFixed(2)}) für ${fmt(pick.price)}.`);
       }
     }
@@ -1239,7 +1244,7 @@ export function applyAction(S, a, userName, daySeed) {
         sponsor: null, offers: [], reserves: {}, popularity: 0.8, ledger: newLedger(), annual: [], youthSeq: 0, trainers: [],
         intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [], hires: 0, staff: {}, gf: { budget: 0, tasks: { staff: false, squad: false, rotation: false }, spent: 0 }, followDoc: false };
       for (const r of ["praesident", "headcoach", "betreuer"]) setStaff(c, r, 1);
-      FOUND_PLAN.forEach((pos, i) => c.h.players.push(genPlayer(rng, pos, LV[11].bot * (0.75 + rng() * 0.5), 17 + Math.floor(rng() * 16), "h" + id, i)));
+      FOUND_PLAN.forEach((pos, i) => c.h.players.push(genPlayer(rng, pos, LV[11].bot * (0.75 + rng() * 0.5), 17 + Math.floor(rng() * 16), "h" + id, i, { level: 11 })));
       seasonStartHuman(S, c, true);
       news(S, `Neugründung: ${name} (${kreis === "RH" ? "Region Hannover" : "Hameln-Pyrmont"}) startet zur nächsten Saison in der untersten Spielklasse.`);
       userNews(S, a.user_id, `${name} ist gegründet. Ihr startet zur nächsten Saison in der untersten Spielklasse eures Kreises.`);
@@ -1391,7 +1396,7 @@ export function applyAction(S, a, userName, daySeed) {
       if (m.age >= 33 && yrs > 2) return fail(`${m.name} unterschreibt in seinem Alter höchstens 2 Jahre.`);
       ledger(h, "out", "Transfers", m.price);
       S.taken.add(m.id); S.freeAgents = S.freeAgents.filter((x) => x.id !== m.id);
-      const np = { id: "h" + club.id + ":" + m.id, name: m.name, pos: m.pos, age: m.age, a: { ...m.a }, max: m.max, pot: m.pot, wage: off.base,
+      const np = { id: "h" + club.id + ":" + m.id, name: m.name, nat: m.nat, pos: m.pos, age: m.age, a: { ...m.a }, max: m.max, pot: m.pot, wage: off.base,
         fit: m.inj ? 0 : 100, form: 0, inj: null, ban: 0, s: newStats(), c: newStats() };
       setContract(np, off, ctUntil(S, yrs));
       h.players.push(np);
@@ -1804,13 +1809,13 @@ function seasonEnd(S, daySeed) {
     for (let i = 0; i < n; i++) {
       const base = levelMid(L) * (0.32 + 0.035 * h.fac.jugend) * (0.8 + rr() * 0.4) * (1 + 0.06 * nlz);
       const pos = POSITIONS[Math.floor(rr() * POSITIONS.length)];
-      const p = genPlayer(rr, pos, base, 17 + Math.floor(rr() * 2), "y" + c.id + ":" + S.season, h.youthSeq++);
+      const p = genPlayer(rr, pos, base, 17 + Math.floor(rr() * 2), "y" + c.id + ":" + S.season, h.youthSeq++, { level: L, youth: true });
       p.pot = r2(clamp(p.max * (1.5 + 0.09 * h.fac.jugend + rr() * 0.4) * (1 + 0.05 * nlz), p.max, 99.99));
       setContract(p, contractOffers(p, 3).find((o) => o.kind === "fest"), S.season + 3);
       h.players.push(p);
     }
     userNews(S, c.owner, `${n} Talente aus der eigenen Jugend rücken in den Kader auf.`);
-    while (h.players.length < 14) h.players.push(genPlayer(rr, FOUND_PLAN[h.players.length % FOUND_PLAN.length], levelMid(L) * 0.6, 20, "f" + c.id + ":" + S.season, h.youthSeq++));
+    while (h.players.length < 14) h.players.push(genPlayer(rr, FOUND_PLAN[h.players.length % FOUND_PLAN.length], levelMid(L) * 0.6, 20, "f" + c.id + ":" + S.season, h.youthSeq++, { level: L }));
     // Reservestärke
     for (const rk of [2, 3]) { const r = h.reserves[rk]; if (r?.team) { const rt = S.teams.get(r.team); rt.str = r2(humanXI(S, c).str * (rk === 2 ? 0.55 : 0.4) * (1 + 0.02 * h.fac.jugend)); } }
   }
