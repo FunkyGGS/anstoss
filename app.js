@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221257";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221257";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221257";
+import * as E from "./engine.js?v=202611221301";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221301";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221301";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -280,6 +280,7 @@ function vHome() {
   if (expN && S().day >= 15) todo.push(`${expN} Verträge laufen zum Saisonende aus – im Kader verlängern (Sortierung „Vertrag“).`);
   if (tired > 6) todo.push(`${tired} Spieler sind müde (Fitness unter 50). Intensität senken oder rotieren.`);
   if (todo.length) parts.push(`<div class="card" style="margin-top:14px"><h3>To-do</h3>${todo.map((x) => `<div>• ${esc(x)}</div>`).join("")}</div>`);
+  parts.push(headlinesCard(c));
   parts.push(newsCard());
   setTimeout(() => document.querySelectorAll('[data-sel="league"]').forEach((b) => b.addEventListener("click", () => { app.tab = "ligen"; render(); })), 0);
   return parts.join("");
@@ -637,6 +638,103 @@ function roundName(cup, i) {
   return left === 1 ? "Finale" : left === 2 ? "Halbfinale" : left === 3 ? "Viertelfinale" : left === 4 ? "Achtelfinale" : `${i + 1}. Runde`;
 }
 
+
+
+// ------------------------------------------------------------ Schlagzeilen (je Liga: Dorfblatt … Boulevard)
+const PAPERS = [
+  ["Der Gemeindebote", "Mitteilungsblatt mit Sportecke"], ["Kreis-Anzeiger", "Lokalteil Sport"], ["Bezirksrundschau", "Regionalsport"],
+  ["Fußball-Echo", "Das Magazin für den Fußball im Norden"], ["BLITZ", "Deutschlands lauteste Sportseite"],
+];
+const PAPER_TIER = { 1: 4, 2: 4, 3: 3, 4: 3, 5: 2, 6: 2, 7: 1, 8: 1, 9: 0, 10: 0, 11: 0 };
+const HL = {
+  bigwin: [
+    ["{team} gewinnt deutlich mit {score} gegen {opp}", "Klarer Sieg für {team}: {score} gegen {opp}", "{team} feiert {score}-Erfolg – {scorer} trifft"],
+    ["Torfestival: {team} fegt {opp} mit {score} vom Platz", "{team} in Torlaune – {opp} chancenlos", "{scorer} und Co. schießen {opp} ab"],
+    ["{team} zerlegt {opp} – {score}!", "Machtdemonstration: {team} überrollt {opp}", "{opp} erlebt beim {score} sein blaues Wunder"],
+    ["Gala! {team} demontiert {opp} mit {score}", "{scorer} im Rausch – {team} spielt {opp} schwindelig", "Fußballfest: {team} lässt {opp} keine Luft zum Atmen"],
+    ["WAHNSINN! {TEAM} ZERLEGT {OPP} {score}!", "{SCORER}-GALA! DIE FANS TANZEN AUF DEN SITZEN!", "{OPP} WIRD GEDEMÜTIGT – {score}! MUSS DORT JETZT DER TRAINER ZITTERN?"],
+  ],
+  win: [
+    ["{team} gewinnt {score} gegen {opp}", "Drei Punkte für {team}", "{team} setzt sich mit {score} durch"],
+    ["{scorer} schießt {team} zum Sieg", "{team} bleibt in der Spur", "Arbeitssieg für {team} gegen {opp}"],
+    ["{team} siegt verdient – {opp} findet kein Mittel", "{scorer} entscheidet die Partie", "Wichtiger Dreier für {team}"],
+    ["{scorer} – der Mann der Stunde bei {team}", "{team} bleibt eiskalt: {score} gegen {opp}", "Sieg mit Ansage: {team} liefert"],
+    ["{SCORER} KNIPST {TEAM} ZUM SIEG!", "SIEG-RAUSCH! {TEAM} WILL MEHR!", "{TEAM} GEWINNT – UND DIE KONKURRENZ ZITTERT!"],
+  ],
+  draw: [
+    ["{team} und {opp} trennen sich {score}", "Punkteteilung zwischen {team} und {opp}", "Unentschieden für {team}"],
+    ["Remis mit Luft nach oben für {team}", "{team} kommt über ein {score} nicht hinaus", "Gerechtes Unentschieden gegen {opp}"],
+    ["{team} verpasst den Sieg – nur {score} gegen {opp}", "Zu wenig Ideen: {team} spielt {score}", "Ein Punkt, mehr nicht"],
+    ["Schlaftablette! {team} und {opp} langweilen beim {score}", "{team} tritt auf der Stelle", "Remis-Frust bei {team}"],
+    ["GÄHN! {TEAM} SCHLÄFERT DAS STADION EIN!", "REMIS-FRUST! WO IST DER BISS, {TEAM}?", "{score}! FANS FORDERN: AUFWACHEN!"],
+  ],
+  loss: [
+    ["{team} unterliegt {opp} mit {score}", "Niederlage für {team} – Trainer: „Wir schauen nach vorn“", "{opp} nimmt die Punkte mit"],
+    ["{team} enttäuscht gegen {opp}", "Rückschlag für {team}", "{team} geht leer aus – {score} gegen {opp}"],
+    ["Bittere Pleite: {team} patzt gegen {opp}", "{team} ohne Durchschlagskraft", "Fehlerfestival kostet {team} die Punkte"],
+    ["Krise bei {team}? {score}-Pleite gegen {opp}", "Ratlos: {team} findet kein Rezept", "{team} enttäuscht auf ganzer Linie"],
+    ["PLEITE! {TEAM} BLAMIERT SICH GEGEN {OPP}!", "WAS WAR DAS DENN, {TEAM}?", "FANS STINKSAUER – {TEAM} VERSAGT!"],
+  ],
+  bigloss: [
+    ["Deutliche Niederlage für {team} gegen {opp}", "{team} verliert hoch mit {score}", "Ein Tag zum Vergessen für {team}"],
+    ["Debakel für {team}: {score} gegen {opp}", "{team} unter die Räder gekommen", "Abwehr von {team} mit offenen Türen"],
+    ["Abwehr im Winterschlaf: {team} kassiert {ga} Gegentore", "Blamage gegen {opp}", "{team} geht sang- und klanglos unter"],
+    ["Totalausfall! {team} geht gegen {opp} unter", "{ga} Gegentore – bei {team} brennt der Baum", "Offenbarungseid: {team} wird vorgeführt"],
+    ["SCHÄM-PARTIE! {TEAM} GEHT {score} UNTER!", "{ga} GEGENTORE! DIESE ABWEHR IST EIN SCHEUNENTOR!", "TRAINER-BEBEN? {TEAM} WIRD ZERLEGT!"],
+  ],
+};
+const HL_CTX = {
+  top: ["{team} ist Tabellenführer", "{team} grüßt von der Spitze", "Spitzenreiter {team} legt vor", "Platz 1! Bei {team} träumen sie vom Aufstieg", "{TEAM} GANZ OBEN – AUFSTIEGS-ALARM!"],
+  bottom: ["{team} auf einem Abstiegsplatz", "{team} steckt im Tabellenkeller", "Abstiegssorgen bei {team}", "Abstiegsangst! {team} versinkt im Keller", "KELLER-ALARM! {TEAM} TAUMELT RICHTUNG ABGRUND!"],
+  streakL: ["Dritte Niederlage in Folge für {team}", "{team} wartet weiter auf Punkte", "Negativserie hält an: {team} verliert erneut", "Horror-Serie! Bei {team} geht nichts mehr", "PLEITEN-SERIE! WER RETTET {TEAM}?"],
+  streakW: ["{team} gewinnt zum dritten Mal in Folge", "{team} mit Siegesserie", "{team} im Lauf – drei Siege am Stück", "Unaufhaltsam! {team} feiert die nächste Gala", "{TEAM} IM SIEGES-RAUSCH – DREI DINGER AM STÜCK!"],
+  hattrick: ["Drei Tore von {scorer}", "{scorer} trifft dreifach", "Hattrick! {scorer} glänzt", "{scorer} schnürt den Dreierpack – ein Spieler in Topform", "{SCORER} DREI MAL! DIESER MANN IST NICHT ZU STOPPEN!"],
+  red: ["Platzverweis für {red}", "{red} sieht Rot", "Rote Karte gegen {red} schwächt {team}", "Rot-Sünder {red} lässt {team} im Stich", "{RED} DREHT DURCH – ROT! TEAM IM STICH GELASSEN!"],
+};
+function hlFill(tpl, v) { return tpl.replace(/\{(\w+)\}/g, (_, k) => { const lo = k.toLowerCase(); const val = v[lo] ?? ""; return k === k.toUpperCase() && k.length > 1 ? String(val).toUpperCase() : val; }); }
+function hlPick(arr, seed) { return arr[E.hash32(seed) % arr.length]; }
+function matchFacts(m, tid) {
+  const k = m.h === tid ? 0 : 1, gf = k ? m.ga : m.gh, ga = k ? m.gh : m.ga;
+  const goals = (m.st?.g || []).filter((g) => g[1] === k && g[3]); const cnt = {}; for (const g of goals) cnt[g[2]] = (cnt[g[2]] || 0) + 1;
+  const top = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
+  const red = (m.st?.c || []).find((c2) => c2[1] === k && c2[3] !== "Y" && c2[2]);
+  return { gf, ga, opp: team(k ? m.h : m.a)?.name || "?", scorer: top ? top[0] : null, scorerN: top ? top[1] : 0, red: red?.[2] || null, score: `${gf}:${ga}` };
+}
+function headlineFor(tier, t, m, comp, seed) {
+  const f = matchFacts(m, t.id);
+  const d = f.gf - f.ga, kind = d >= 3 ? "bigwin" : d > 0 ? "win" : d === 0 ? "draw" : d <= -3 ? "bigloss" : "loss";
+  let pool = HL[kind][tier];
+  if (!f.scorer) pool = pool.filter((x) => !/\{scorer\}|\{SCORER\}/.test(x));
+  const v = { team: t.name, opp: f.opp, score: f.score, scorer: f.scorer || "", ga: f.ga, red: f.red || "" };
+  const main = hlFill(hlPick(pool.length ? pool : HL[kind][tier].slice(0, 1), seed), v);
+  const extra = [];
+  if (f.scorerN >= 3) extra.push(hlFill(HL_CTX.hattrick[tier], v));
+  if (f.red && tier >= 2) extra.push(hlFill(HL_CTX.red[tier], v));
+  return { main: (comp ? (tier === 4 ? comp.toUpperCase() + ": " : comp + ": ") : "") + main, kind, extra };
+}
+function headlinesCard(c) {
+  const t = E.firstTeam(S(), c); if (t.status !== "active") return "";
+  const L = Math.min(t.level, 11), tier = PAPER_TIER[L], [paper, sub] = PAPERS[tier];
+  const day = S().day; if (!day || day > 34) return "";
+  const items = [];
+  const lm = fixtureFor(t, day); if (lm?.gh != null) { const h = headlineFor(tier, t, lm, null, `${t.id}:${S().season}:${day}:l`); items.push([h.main, true]); h.extra.forEach((x) => items.push([x, false])); }
+  const cm = cupMatchFor(t, day); if (cm?.m.gh != null) { const h = headlineFor(tier, t, cm.m, cm.cup.name, `${t.id}:${S().season}:${day}:c`); items.push([h.main, true]); }
+  const em = euroMatchFor(t, day); if (em?.m.gh != null) { const h = headlineFor(Math.max(tier, 3), t, em.m, em.C.short, `${t.id}:${S().season}:${day}:e`); items.push([h.main, true]); }
+  // Tabellenlage und Serien
+  const lg = lgOf(t), pos = posOf(t), n = lg?.teams.length || 18, v = { team: t.name };
+  const last3 = [day, day - 1, day - 2].map((d) => fixtureFor(t, d)).filter((m) => m?.gh != null).map((m) => { const f = matchFacts(m, t.id); return Math.sign(f.gf - f.ga); });
+  if (last3.length === 3 && last3.every((x) => x < 0)) items.push([hlFill(HL_CTX.streakL[tier], v), false]);
+  else if (last3.length === 3 && last3.every((x) => x > 0)) items.push([hlFill(HL_CTX.streakW[tier], v), false]);
+  if (pos === 1 && day >= 3) items.push([hlFill(HL_CTX.top[tier], v), false]);
+  else if (pos && pos > n - 2 && day >= 3) items.push([hlFill(HL_CTX.bottom[tier], v), false]);
+  // Rest der Liga: höchster Sieg des Spieltags
+  const fx = (lg?.fixtures?.[day] || []).filter((m) => m.gh != null && m.h !== t.id && m.a !== t.id).sort((a, b) => Math.abs(b.gh - b.ga) - Math.abs(a.gh - a.ga));
+  if (fx[0] && Math.abs(fx[0].gh - fx[0].ga) >= 2) { const m = fx[0], w = m.gh > m.ga ? team(m.h) : team(m.a); const h = headlineFor(tier, w, m, null, `${m.h}:${m.a}:${day}`); items.push([h.main, false]); }
+  if (!items.length) return "";
+  const style = tier === 4 ? "font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:.2px" : "";
+  return `<div class="card" style="margin-top:14px${tier === 4 ? ";border-top:4px solid #d40000" : ""}"><div class="row" style="justify-content:space-between"><h3 style="${tier === 4 ? "color:#d40000;font-style:italic" : ""}">${paper}</h3><span class="small muted">${sub} · Spieltag ${day}</span></div>
+    ${items.map(([x, big]) => `<div style="${style}${big ? ";font-size:" + (tier === 4 ? "20px" : "16px") + ";font-weight:" + (tier >= 3 ? 800 : 600) : ";font-size:14px"};padding:4px 0;border-top:1px solid var(--line)">${esc(x)}</div>`).join("")}</div>`;
+}
 
 // ------------------------------------------------------------ Europapokal
 function euroMatchFor(t, day) {

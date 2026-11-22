@@ -77,4 +77,4 @@ Link und Einladungscode schicken. Jeder legt mit E-Mail und Passwort ein Konto a
 - **Catering:** 6 Stufen vom Bratwurststand bis zur professionellen Konzession (Erlös je Zuschauer, Bau- und Betriebskosten).
 - **Security:** 6 Stufen vom Türsteher aus der Dorfdisco bis zum professionellen Sicherheitsunternehmen; Mindeststufe je Liga als Lizenzvoraussetzung, Ordnungsstrafen bei Überlastung.
 - **Vereinsgelände & Stadion:** Hartplätze, Rasen (Wintersperre Nov–Feb) und Kunstrasen; Trainingsbetrieb und Zahl der Jugendteams hängen von den Plätzen ab. Flutlicht in 4 Stufen, Steh- und Sitzplätze ausbaubar. Lizenz-Check: Kapazität, Sitzplätze, Flutlicht und Security je Spielklasse – sonst kein Aufstieg.
-
+- **Schlagzeilen:** Täglich auf der Übersicht – je nach Liga vom „Gemeindeboten“ (neutral) über Kreis-Anzeiger, Bezirksrundschau und Fußball-Echo bis zur Boulevardzeitung „BLITZ“ (Hype und harte Roasts). Zu Liga-, Pokal- und Europapokalspielen, Serien, Tabellenlage, Hattricks, Platzverweisen und dem höchsten Sieg des Spieltags.
