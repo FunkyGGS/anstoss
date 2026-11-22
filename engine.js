@@ -2,6 +2,7 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -71,6 +72,10 @@ const INT_PERF = [-0.05, -0.025, 0, 0.025, 0.05];
 const INT_GROW = [0.6, 0.8, 1, 1.2, 1.4];
 const AGG_CARD = [0.45, 0.7, 1, 1.45, 2.1];
 const AGG_HURT = [0.8, 0.9, 1, 1.2, 1.5];    // Verletzungsrisiko für den Gegner
+export const sl = (h, role) => h?.staff?.[role]?.lvl || 0;
+const HC_B = [-0.03, 0, 0.01, 0.02, 0.035, 0.05];
+const REHA_F = [1.2, 1, 0.92, 0.85, 0.75, 0.65];
+const DOC_REST = [0, 25, 35, 42, 48, 55];
 export const fitFactor = (f) => 0.5 + 0.5 * clamp(f, 0, 100) / 100;
 const AI_FIT = 0.85;  // KI-Teams spielen im Schnitt mit Fitnessstand 70
 export const TACTICS = { defensiv: [0.85, 0.82], normal: [1, 1], offensiv: [1.14, 1.1] };
@@ -568,7 +573,8 @@ export function humanXI(S, c) {
   const h = c.h;
   const slots = FORMATIONS[h.formation] || FORMATIONS["4-4-2"];
   const minFit = h.minFit ?? 60;
-  const ready = h.players.filter((p) => !p.inj && !(p.ban > 0) && p.fit > 0);
+  const docOn = h.followDoc && sl(h, "arzt") > 0;
+  const ready = h.players.filter((p) => !p.inj && !(p.ban > 0) && p.fit > 0 && !(docOn && p.fit < DOC_REST[sl(h, "arzt")]));
   const used = new Set(), xi = [];
   const order = slots.map((pos, i) => ({ pos, i })).sort((a, b) => (a.pos === "TW" ? -1 : b.pos === "TW" ? 1 : 0));
   for (const { pos, i } of order) {
@@ -578,6 +584,7 @@ export function humanXI(S, c) {
       const v = curStrength(p, pos), k = p.fit >= minFit ? 1 : 0;   // ausgeruhte Spieler zuerst
       if (k > bk || (k === bk && (v > bv || (v === bv && p.id < best.id)))) { bk = k; bv = v; best = p; }
     }
+    if (best && pos === "TW") bv *= 1 + 0.01 * sl(h, "twtrainer");
     if (best) { used.add(best.id); xi[i] = { slot: pos, p: best, eff: bv, max: posStrength(best, pos) }; }
     else xi[i] = { slot: pos, p: null, eff: 0.5, max: 0.5 };
   }
@@ -585,7 +592,7 @@ export function humanXI(S, c) {
   const base = xi.reduce((s2, x) => s2 + x.eff, 0) / 11;
   const maxStr = xi.reduce((s2, x) => s2 + x.max, 0) / 11;
   let str = base * (1 + INT_PERF[(h.intensity || 3) - 1]);
-  if (h.trainer) str *= 1 + clamp((h.trainer.q / Math.max(1, base) - 1) * 0.03, -0.04, 0.04);
+  str *= 1 + HC_B[sl(h, "headcoach")] + 0.004 * sl(h, "taktik") + 0.003 * sl(h, "psycho") + 0.002 * sl(h, "betreuer") + 0.003 * sl(h, "praesident");
   const xp = xi.filter((x) => x.p);
   const avgA = (k) => xp.length ? xp.reduce((s2, x) => s2 + x.p.a[k], 0) / xp.length : 0;
   return { str: r2(str), max: r2(maxStr), xi, missing, zwk: avgA("zwk"), disc: (avgA("tak") + avgA("men")) / 2, ovr: xp.length ? xp.reduce((s2, x) => s2 + x.p.max, 0) / xp.length : 1 };
@@ -626,7 +633,7 @@ function playMatch(S, h, a, rng, neutral = false) {
   for (let k = 0; k < 2; k++) {
     const X = sides[k];
     let cardMod = 1;
-    if (X.human && X.X.ovr) cardMod = clamp(1.25 - 0.3 * (X.X.disc / X.X.ovr), 0.75, 1.3);
+    if (X.human && X.X.ovr) cardMod = clamp(1.25 - 0.3 * (X.X.disc / X.X.ovr), 0.75, 1.3) * (1 - 0.04 * sl(X.c.h, "psycho"));
     const ag = AGG_CARD[X.agg - 1] * cardMod;
     const pl = X.human ? X.players : null;
     for (let i = 0; i < 11; i++) {
@@ -682,7 +689,7 @@ const INJURIES = [
 const ILLNESS = [{ n: "Erkältung", min: 1, max: 3, w: 50, back: 80 }, { n: "Grippe", min: 4, max: 8, w: 25, back: 60 }, { n: "Magen-Darm-Infekt", min: 1, max: 3, w: 25, back: 75 }];
 function injure(S, c, p, rng, list, sevBoost, ill) {
   const it = pickWeighted(rng, list, (x) => x.w * (x.sev ? 1 + sevBoost * x.sev : 1));
-  const days = it.min + Math.floor(rng() * (it.max - it.min + 1));
+  const days = Math.max(1, Math.round((it.min + Math.floor(rng() * (it.max - it.min + 1))) * (ill ? 1 : REHA_F[sl(c.h, "reha")])));
   p.inj = { n: it.n, days, back: it.back, ill: !!ill }; p.fit = 0;
   userNews(S, c.owner, `${ill ? "Erkrankt" : "Verletzt"}: ${p.name} – ${it.n}, fällt ca. ${days} ${days === 1 ? "Tag" : "Tage"} aus.`);
 }
@@ -702,10 +709,10 @@ function afterMatchHuman(S, X, opp, r, k, compName, isLeague, daySeed) {
   const oppAgg = AGG_HURT[(opp.agg || 3) - 1];
   for (const { p } of X.players) {
     const before = p.fit;
-    p.fit = r2(clamp(p.fit - INT_DRAIN[lvl] * (1.25 - p.a.fit / 200), 0, 100));
+    p.fit = r2(clamp(p.fit - INT_DRAIN[lvl] * (1.25 - p.a.fit / 200) * (1 - 0.03 * sl(h, "athletik")), 0, 100));
     p.played = true;
     const ageF = p.age > 30 ? 1 + 0.05 * (p.age - 30) : 1;
-    const risk = 0.009 * INT_RISK[lvl] * (1 + 2.5 * Math.pow(1 - before / 100, 2)) * ageF * oppAgg * (1.15 - p.a.fit / 300);
+    const risk = (1 - 0.06 * sl(h, "arzt") - 0.01 * sl(h, "praesident")) * 0.009 * INT_RISK[lvl] * (1 + 2.5 * Math.pow(1 - before / 100, 2)) * ageF * oppAgg * (1.15 - p.a.fit / 300);
     if (!p.inj && rng() < risk) injure(S, c, p, rng, INJURIES, 2 * (1 - before / 100) + (oppAgg - 1), false);
   }
   // Mannschaftsstatistik der Saison
@@ -748,9 +755,13 @@ function takeOver(S, c, userId, cash) {
   c.h = {
     cash: eur(cash), players, trainer: null, fac: { jugend: fac, training: fac, umfeld: fac }, formation: "4-4-2", tactic: "normal",
     ticket: 1, sponsor: null, offers: [], reserves: {}, popularity: 1, ledger: newLedger(), annual: [], youthSeq: 0,
-    trainers: [], intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [],
+    trainers: [], intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [], hires: 0,
+    staff: {}, gf: { budget: 0, tasks: { staff: false, squad: false, rotation: false }, spent: 0 }, followDoc: false,
   };
   for (const tid of c.teams.slice(1)) c.h.reserves[S.teams.get(tid).rank] = { team: tid, active: true };
+  const base = L <= 2 ? 4 : L <= 4 ? 3 : L <= 6 ? 2 : 1;
+  const def = { praesident: base, gf: 0, headcoach: base, cotrainer: base - 1, taktik: base - 1, athletik: base - 1, twtrainer: base - 1, scout: base - 1, nlz: base - 1, arzt: base - 1, physio: base - 1, reha: base - 2, psycho: base - 2, betreuer: Math.max(1, base - 1), marketing: base - 1, presse: base - 1 };
+  for (const r of ROLE_ORDER) setStaff(c, r, Math.max(0, def[r]));
   seasonStartHuman(S, c, true);
 }
 
@@ -758,14 +769,15 @@ function seasonStartHuman(S, c, initial = false) {
   const h = c.h, t = firstTeam(S, c);
   const L = Math.min(t.level, 11);
   const rng = rngFrom(S.seasonSeed, S.season, "offers", c.id);
-  const base = LV[L].sponsor * (1 + 0.04 * h.fac.umfeld) * h.popularity;
+  const base = LV[L].sponsor * (1 + 0.04 * h.fac.umfeld) * h.popularity * (1 + 0.07 * sl(h, "marketing")) * (1 + 0.01 * sl(h, "praesident"));
   h.offers = [
     { id: "o1", name: sponsorName(rng), base: eur(base * (1.05 + rng() * 0.1)), win: 0, typ: "Sicherheit" },
     { id: "o2", name: sponsorName(rng), base: eur(base * (0.85 + rng() * 0.1)), win: eur((base / 34) * (0.6 + rng() * 0.4)), typ: "Ausgewogen" },
     { id: "o3", name: sponsorName(rng), base: eur(base * (0.55 + rng() * 0.1)), win: eur((base / 34) * (1.4 + rng() * 0.6)), typ: "Leistung" },
   ];
   h.sponsor = null;
-  h.trainers = trainerPool(S, c);
+  h.trainers = [];
+  if (h.gf) { h.gf.spent = 0; h.gf.replan = true; }
   if (!initial) h.ledger = newLedger();
 }
 const SP1 = ["Autohaus", "Bäckerei", "Sparkasse", "Stadtwerke", "Brauerei", "Getränke", "Elektro", "Bau", "Versicherung", "Optik", "Logistik", "Immobilien", "Pflegedienst", "Dachdecker", "Fahrschule", "Energie", "IT-Systeme", "Möbelhaus"];
@@ -787,7 +799,8 @@ export function marketFor(S, c, rngSeedDay) {
   const rng = rngFrom(rngSeedDay, "market", c.id);
   const pool = [...S.teams.values()].filter((x) => x.status === "active" && Math.abs(x.level - t.level) <= 1 && x.clubId !== c.id && !S.clubs.get(x.clubId)?.h);
   const out = [];
-  for (let i = 0; i < 6 && pool.length; i++) {
+  const nTeams = 3 + 2 * sl(c.h, "scout");
+  for (let i = 0; i < nTeams && pool.length; i++) {
     const tm = pool[Math.floor(rng() * pool.length)];
     const sq = aiSquad(S, tm);
     for (let k = 0; k < 3 && sq.length; k++) {
@@ -825,6 +838,110 @@ export function youthCost(S, c) {
   return eur(LV[L].fixed * (0.1 + 0.06 * c.h.fac.jugend));
 }
 
+
+// ---------------------------------------------------------------- Personal
+function setStaff(c, role, lvl) {
+  const h = c.h;
+  h.staff = h.staff || {};
+  if (!lvl) { delete h.staff[role]; return; }
+  const rng = rngFrom(c.id, role, h.hires = (h.hires || 0) + 1);
+  h.staff[role] = { lvl, name: nameFrom(rng) };
+}
+export function staffCost(h, L) {
+  let s2 = 0; for (const r in h.staff || {}) s2 += staffSalary(r, h.staff[r].lvl, L);
+  return s2;
+}
+const GF_PRIO = ["headcoach", "cotrainer", "arzt", "physio", "athletik", "reha", "taktik", "scout", "nlz", "psycho", "twtrainer", "betreuer"];
+function gfDaily(S, c, daySeed) {
+  const h = c.h, g = sl(h, "gf"); if (!g) return;
+  const t = firstTeam(S, c), L = Math.min(t.level, 11);
+  const rng = rngFrom(daySeed, "gf", c.id);
+  const T = h.gf.tasks;
+  // Personal planen: zu Saisonbeginn oder nach Änderungen
+  if (T.staff && (h.gf.replan || S.day === 1)) {
+    h.gf.replan = false;
+    const usable = h.gf.budget * (T.squad ? 0.7 : 1) * (0.7 + 0.06 * g);
+    const prio = GF_PRIO.map((r, i) => ({ r, k: i + (rng() - 0.5) * (6 - g) * 2 })).sort((a, b) => a.k - b.k).map((x) => x.r);
+    const lv = Object.fromEntries(prio.map((r) => [r, 1]));
+    let cost = () => prio.reduce((s2, r) => s2 + staffSalary(r, lv[r], L), 0);
+    for (let round = 2; round <= 5; round++) for (const r of prio) { if (lv[r] !== round - 1) continue; lv[r] = round; if (cost() > usable) lv[r] = round - 1; }
+    const changed = [];
+    for (const r of prio) if (sl(h, r) !== lv[r]) { if (sl(h, r) >= 2) ledger(h, "out", "Abfindungen", staffSalary(r, sl(h, r), L) * 0.3); setStaff(c, r, lv[r]); changed.push(ROLES[r].name + " " + lv[r]); }
+    if (changed.length) userNews(S, c.owner, `GF Sport ${h.staff.gf.name} hat das Personal neu aufgestellt: ${changed.join(", ")}.`);
+  }
+  // Rotation & Intensität
+  if (T.rotation) {
+    const fit = h.players.filter((p) => !p.inj).map((p) => p.fit).sort((a, b) => b - a).slice(0, 16);
+    const avg = fit.reduce((a, b) => a + b, 0) / Math.max(1, fit.length);
+    const inj = h.players.filter((p) => p.inj).length;
+    const noise = (rng() - 0.5) * (5 - g) * 8;
+    if (inj >= 4 || avg + noise < 60) { h.intensity = Math.max(2, (h.intensity || 3) - 1); h.minFit = 65; }
+    else if (avg + noise > 85) { h.intensity = g >= 3 ? 4 : 3; h.minFit = 55; }
+    else { h.intensity = 3; h.minFit = 60; }
+  }
+  // Kader auffüllen
+  if (T.squad && S.day % 2 === 1) {
+    const ok = h.players.filter((p) => !p.inj);
+    const need = { TW: 2, D: 6, M: 6, O: 5 };
+    const have = { TW: 0, D: 0, M: 0, O: 0 };
+    for (const p of ok) have[p.pos === "TW" ? "TW" : POS_GROUP[p.pos]]++;
+    const gap = Object.keys(need).find((k) => have[k] < need[k]);
+    const budgetLeft = h.gf.budget * 0.3 - (h.gf.spent || 0);
+    if (gap && h.players.length < 30 && budgetLeft > 0) {
+      const mk = marketFor(S, c, daySeed).filter((p) => (gap === "TW" ? p.pos === "TW" : POS_GROUP[p.pos] === gap && p.pos !== "TW") && p.price <= Math.min(budgetLeft, h.cash));
+      if (mk.length) {
+        const pick = g >= 3 ? mk.sort((a, b) => b.max / Math.max(1, b.price) - a.max / Math.max(1, a.price))[0] : mk[Math.floor(rng() * mk.length)];
+        ledger(h, "out", "Transfers", pick.price); h.gf.spent = (h.gf.spent || 0) + pick.price;
+        S.taken.add(pick.id); S.freeAgents = S.freeAgents.filter((x) => x.id !== pick.id);
+        h.players.push({ id: "h" + c.id + ":" + pick.id, name: pick.name, pos: pick.pos, age: pick.age, a: { ...pick.a }, max: pick.max, pot: pick.pot, wage: wageOf(pick.max), fit: 100, inj: null, ban: 0, s: newStats(), c: newStats() });
+        userNews(S, c.owner, `GF Sport verpflichtet ${pick.name} (${pick.pos}, ${pick.max.toFixed(2)}) für ${fmt(pick.price)}.`);
+      }
+    }
+  }
+}
+// Scout: geschätztes Potenzial (Spanne) je nach Stufe
+export function potEstimate(h, p) {
+  const lvl = sl(h, "scout");
+  if (!lvl) return null;
+  const spread = [0, 0.25, 0.15, 0.1, 0.05, 0][lvl];
+  const noise = (rngFrom("pe", p.id, lvl)() - 0.5) * spread;
+  const mid = p.pot * (1 + noise);
+  return { lo: r2(Math.max(p.max, mid * (1 - spread))), hi: r2(Math.min(99.99, mid * (1 + spread))), exact: lvl === 5 };
+}
+// Taktiktrainer: Gegneranalyse
+export function opponentReport(S, c, oppId) {
+  const h = c.h, lvl = sl(h, "taktik"); const o = S.teams.get(oppId);
+  if (!lvl) return { lvl, text: "Kein Taktiktrainer – keine Gegneranalyse." };
+  if (lvl === 1) return { lvl, text: `„${o.name} hat elf Spieler und einen Torwart. Ich würde sagen: Tore schießen, keine kassieren.“` };
+  const rng = rngFrom("rep", c.id, oppId, S.gday || 0);
+  const real = teamStrength(S, o), mine = humanXI(S, c).str;
+  const spread = [0, 0, 0.15, 0.07, 0.03, 0][lvl];
+  const est = real * (1 + (rng() - 0.5) * 2 * spread);
+  const out = { lvl, est: r2(est), spread, mine };
+  const lg = o.league ? S.leagues.get(o.league) : null;
+  if (lvl >= 3 && lg) {
+    const res = [];
+    for (let d = S.day; d >= 1 && res.length < 5; d--) { const m = (lg.fixtures[d] || []).find((x) => x.gh != null && (x.h === oppId || x.a === oppId)); if (m) { const gf = m.h === oppId ? m.gh : m.ga, ga = m.h === oppId ? m.ga : m.gh; res.push(gf > ga ? "S" : gf < ga ? "N" : "U"); } }
+    out.form = res;
+  }
+  if (lvl >= 4) {
+    const sq = aiSquad(S, o).slice().sort((a, b) => b.max - a.max);
+    out.key = sq.slice(0, 3).map((p) => `${p.name} (${p.pos}, ${p.max.toFixed(1)})`);
+    const zk = sq.slice(0, 11).reduce((s2, p) => s2 + p.a.zwk, 0) / 11, sp = sq.slice(0, 11).reduce((s2, p) => s2 + p.a.spd, 0) / 11;
+    out.trait = zk > sp ? "zweikampfstark, eher langsam – mit Tempo über die Flügel überlaufen" : "schnell, aber anfällig in Zweikämpfen – robust dagegenhalten";
+  }
+  if (lvl >= 5) out.tip = real > mine * 1.08 ? "Empfehlung: defensiv stehen, auf Konter lauern, Aggressivität 4." : real < mine * 0.92 ? "Empfehlung: offensiv auftreten, früh pressen." : "Empfehlung: normal spielen, die Standards entscheiden.";
+  return out;
+}
+// Mannschaftsarzt: Einsatzempfehlung
+export function doctorAdvice(h, p) {
+  const lvl = sl(h, "arzt");
+  if (!lvl || p.inj) return null;
+  if (p.fit < DOC_REST[lvl]) return lvl >= 3 ? `Pause empfohlen (Verletzungsrisiko erhöht)` : "Pause empfohlen";
+  if (lvl >= 4 && p.age > 32 && p.fit < 70) return "Belastung dosieren";
+  return null;
+}
+
 // ---------------------------------------------------------------- Aktionen
 export function applyAction(S, a, userName, daySeed) {
   const fail = (msg) => { userNews(S, a.user_id, "Abgelehnt: " + msg); return false; };
@@ -853,7 +970,8 @@ export function applyAction(S, a, userName, daySeed) {
       const rng = rngFrom(daySeed, "found", id);
       c.h = { cash: 50000, players: [], trainer: null, fac: { jugend: 0, training: 0, umfeld: 0 }, formation: "4-4-2", tactic: "normal", ticket: 1,
         sponsor: null, offers: [], reserves: {}, popularity: 0.8, ledger: newLedger(), annual: [], youthSeq: 0, trainers: [],
-        intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [] };
+        intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [], hires: 0, staff: {}, gf: { budget: 0, tasks: { staff: false, squad: false, rotation: false }, spent: 0 }, followDoc: false };
+      for (const r of ["praesident", "headcoach", "betreuer"]) setStaff(c, r, 1);
       FOUND_PLAN.forEach((pos, i) => c.h.players.push(genPlayer(rng, pos, LV[11].bot * (0.75 + rng() * 0.5), 17 + Math.floor(rng() * 16), "h" + id, i)));
       seasonStartHuman(S, c, true);
       news(S, `Neugründung: ${name} (${kreis === "RH" ? "Region Hannover" : "Hameln-Pyrmont"}) startet zur nächsten Saison in der untersten Spielklasse.`);
@@ -924,17 +1042,33 @@ export function applyAction(S, a, userName, daySeed) {
     }
     case "hireTrainer": {
       if (!h) return fail("Kein Verein.");
-      const tr = h.trainers.find((x) => x.id === P.id);
-      if (!tr) return fail("Trainer nicht verfügbar.");
-      if (h.trainer) ledger(h, "out", "Abfindungen", h.trainer.wage * 0.3);
-      h.trainer = tr; h.trainers = h.trainers.filter((x) => x.id !== tr.id);
-      userNews(S, a.user_id, `${tr.name} ist neuer Trainer (Qualität ${tr.q.toFixed(2)}).`);
+      const tr = h.trainers.find((x) => x.id === P.id); if (!tr) return fail("Trainer nicht verfügbar.");
+      setStaff(club, "headcoach", clamp(Math.round((tr.q / levelMid(Math.min(firstTeam(S, club).level, 11))) * 3), 1, 5));
       return true;
     }
-    case "fireTrainer": {
-      if (!h || !h.trainer) return fail("Kein Trainer.");
-      ledger(h, "out", "Abfindungen", h.trainer.wage * 0.3); h.trainer = null; return true;
+    case "fireTrainer": { if (!h) return fail("Kein Verein."); setStaff(club, "headcoach", 0); return true; }
+    case "staff": {
+      if (!h) return fail("Kein Verein.");
+      const role = P.role, lvl = clamp(Math.round(Number(P.lvl)) || 0, 0, 5);
+      if (!ROLES[role]) return fail("Unbekanntes Amt.");
+      if (SPORT_ROLES.includes(role) && sl(h, "gf") > 0 && h.gf.tasks.staff) return fail("Dieses Amt verwaltet der Geschäftsführer Sport.");
+      const L = Math.min(firstTeam(S, club).level, 11);
+      const cur = sl(h, role);
+      if (cur === lvl) return true;
+      if (cur >= 2) ledger(h, "out", "Abfindungen", staffSalary(role, cur, L) * 0.3);
+      setStaff(club, role, lvl);
+      userNews(S, a.user_id, lvl ? `${ROLES[role].name}: ${h.staff[role].name} übernimmt als „${ROLES[role].lv[lvl - 1][0]}“.` : `${ROLES[role].name}: Stelle ist jetzt unbesetzt.`);
+      if (role === "gf" && lvl && h.gf.tasks.staff) h.gf.replan = true;
+      return true;
     }
+    case "gfSettings": {
+      if (!h) return fail("Kein Verein.");
+      if (P.budget != null) h.gf.budget = eur(clamp(Number(P.budget) || 0, 0, 1e9));
+      if (P.tasks) for (const k of ["staff", "squad", "rotation"]) if (k in P.tasks) h.gf.tasks[k] = !!P.tasks[k];
+      h.gf.replan = true;
+      return true;
+    }
+    case "doctor": { if (!h) return fail("Kein Verein."); h.followDoc = !!P.follow; return true; }
     case "buyPlayer": {
       if (!h) return fail("Kein Verein.");
       if (h.players.length >= 30) return fail("Kader voll (max. 30).");
@@ -1085,7 +1219,7 @@ function attendance(S, c, t, opp, cup) {
   let posRatio = 0.5;
   if (lg) { const sorted = sortedTable(lg); const i = sorted.findIndex((x) => x.id === t.id); posRatio = sorted.length > 1 ? i / (sorted.length - 1) : 0.5; }
   const oppF = opp ? clamp(1 + (L - opp.level) * 0.25, 0.7, 3) : 1;
-  let att = LV[L].att * h.popularity * (1 + 0.06 * h.fac.umfeld) * (1.25 - 0.5 * posRatio) * oppF * Math.pow(h.ticket, -0.8) * (cup ? 1.3 : 1);
+  let att = LV[L].att * h.popularity * (1 + 0.06 * h.fac.umfeld) * (1 + 0.05 * sl(h, "presse")) * (1 + 0.01 * sl(h, "praesident")) * (1.25 - 0.5 * posRatio) * oppF * Math.pow(h.ticket, -0.8) * (cup ? 1.3 : 1);
   const cap = LV[L].cap * (1 + 0.15 * h.fac.umfeld);
   return Math.round(clamp(att, 10, cap));
 }
@@ -1105,7 +1239,7 @@ function matchFinance(S, hid, aid, r, level, isCup, cup) {
       h.lastAtt = att;
     } else ledger(h, "out", "Spielbetrieb", LV[L].match * 0.4);
     if (!isCup && won && h.sponsor?.win) ledger(h, "in", "Sponsoring", h.sponsor.win);
-    h.popularity = clamp(h.popularity + (won ? 0.004 : -0.002), 0.5, 2.5);
+    h.popularity = clamp(h.popularity + (won ? 0.004 * (1 + 0.15 * sl(h, "presse")) : -0.002), 0.5, 2.5);
   }
 }
 
@@ -1115,17 +1249,18 @@ function humanDaily(S, c, daySeed) {
   const L = Math.min(t.level, 11);
   const per = 1 / MATCHDAYS;
   ledger(h, "out", "Gehälter Spieler", h.players.reduce((s, p) => s + p.wage, 0) * per);
-  if (h.trainer) ledger(h, "out", "Gehalt Trainer", h.trainer.wage * per);
+  ledger(h, "out", "Gehälter Personal", staffCost(h, L) * per);
+  gfDaily(S, c, daySeed);
   ledger(h, "out", "Verwaltung & Platz", LV[L].fixed * per);
   ledger(h, "out", "Unterhalt Anlagen", (h.facInvest || 0) * 0.08 * per);
   ledger(h, "out", "Jugendabteilung", youthCost(S, c) * per);
   for (const rk of [2, 3]) if (h.reserves[rk]?.active) ledger(h, "out", rk + ". Mannschaft", reserveCost(S, c, rk) * per);
   if (LV[L].tv) ledger(h, "in", "TV-Gelder", LV[L].tv * per);
-  ledger(h, "in", "Sponsoring", (h.sponsor ? h.sponsor.base : LV[L].sponsor * 0.35) * per);
+  ledger(h, "in", "Sponsoring", (h.sponsor ? h.sponsor.base : LV[L].sponsor * 0.35 * (1 + 0.07 * sl(h, "marketing"))) * per);
   // Fitness, Verletzungen, Krankheiten, Training
   const lvl = (h.intensity || 3) - 1;
   const rng = rngFrom(daySeed, "train", c.id);
-  const trainerF = h.trainer ? clamp(0.6 + (h.trainer.q / Math.max(1, levelMid(L))) * 0.5, 0.6, 1.8) : 0.5;
+  const trainerF = (0.5 + 0.22 * sl(h, "cotrainer") + 0.06 * sl(h, "headcoach")) * (1 + 0.01 * sl(h, "praesident"));
   const mf = monthFactor(S);
   const illNow = h.players.filter((p) => p.inj?.ill).length;
   for (const p of h.players) {
@@ -1133,7 +1268,7 @@ function humanDaily(S, c, daySeed) {
       p.fit = 0;
       if (--p.inj.days <= 0) { const back = p.inj.back; userNews(S, c.owner, `${p.name} ist wieder einsatzbereit.`); p.inj = null; p.fit = back; }
     } else {
-      p.fit = r2(clamp(p.fit + INT_REC[lvl] * (0.8 + p.a.fit / 250) * (p.played ? 0.5 : 1), 0, 100));
+      p.fit = r2(clamp(p.fit + INT_REC[lvl] * (0.8 + p.a.fit / 250) * (p.played ? 0.5 : 1) * (1 + 0.06 * sl(h, "physio")), 0, 100));
       const illP = 0.0018 * mf * (p.fit < 40 ? 1.6 : 1) * (1 + 0.35 * illNow);
       const trP = 0.0012 * INT_RISK[lvl] * (1 + (1 - p.fit / 100)) * (p.played ? 0.3 : 1);
       const x = rng();
@@ -1145,13 +1280,14 @@ function humanDaily(S, c, daySeed) {
     // Training
     if (p.inj) continue;
     let delta = 0;
-    if (p.max < p.pot && p.age < 30) delta += (p.pot - p.max) * 0.006 * (1 + 0.1 * h.fac.training) * trainerF * INT_GROW[lvl] * (0.5 + rng());
+    if (p.max < p.pot && p.age < 30) delta += (p.pot - p.max) * 0.006 * (1 + 0.1 * h.fac.training) * trainerF * INT_GROW[lvl] * (0.5 + rng()) * (p.age < 21 ? 1 + 0.1 * sl(h, "nlz") : 1) * (p.pos === "TW" ? 1 + 0.15 * sl(h, "twtrainer") : 1);
     if (p.age >= 30) delta -= p.max * 0.0006 * (p.age - 29) * (0.5 + rng());
     if (delta) {
       const f = clamp((p.max + delta) / Math.max(0.5, p.max), 0.9, 1.1);
       for (const k of ATTRS) p.a[k] = r2(clamp(p.a[k] * f, 0.5, 99.99));
-      refreshPlayer(p);
     }
+    if (p.age < 31) { const ath = sl(h, "athletik"), psy = sl(h, "psycho"); if (ath) { p.a.spd = r2(clamp(p.a.spd * (1 + 0.0004 * ath), 0.5, 99.99)); p.a.fit = r2(clamp(p.a.fit * (1 + 0.0004 * ath), 0.5, 99.99)); } if (psy) p.a.men = r2(clamp(p.a.men * (1 + 0.0004 * psy), 0.5, 99.99)); }
+    refreshPlayer(p);
   }
 }
 function monthFactor(S) {
@@ -1282,12 +1418,13 @@ function seasonEnd(S, daySeed) {
     const retire = h.players.filter((p) => p.age >= 36 || (p.age >= 33 && rr() < 0.25));
     if (retire.length) userNews(S, c.owner, "Karriereende: " + retire.map((p) => p.name).join(", "));
     h.players = h.players.filter((p) => !retire.includes(p));
-    const n = 2 + Math.floor(h.fac.jugend / 3);
+    const nlz = sl(h, "nlz");
+    const n = 2 + Math.floor(h.fac.jugend / 3) + Math.floor(nlz / 2);
     for (let i = 0; i < n; i++) {
-      const base = levelMid(L) * (0.32 + 0.035 * h.fac.jugend) * (0.8 + rr() * 0.4);
+      const base = levelMid(L) * (0.32 + 0.035 * h.fac.jugend) * (0.8 + rr() * 0.4) * (1 + 0.06 * nlz);
       const pos = POSITIONS[Math.floor(rr() * POSITIONS.length)];
       const p = genPlayer(rr, pos, base, 17 + Math.floor(rr() * 2), "y" + c.id + ":" + S.season, h.youthSeq++);
-      p.pot = r2(clamp(p.max * (1.5 + 0.09 * h.fac.jugend + rr() * 0.4), p.max, 99.99));
+      p.pot = r2(clamp(p.max * (1.5 + 0.09 * h.fac.jugend + rr() * 0.4) * (1 + 0.05 * nlz), p.max, 99.99));
       h.players.push(p);
     }
     userNews(S, c.owner, `${n} Talente aus der eigenen Jugend rücken in den Kader auf.`);
