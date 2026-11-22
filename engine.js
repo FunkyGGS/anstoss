@@ -2,9 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221347";
-import { pickNat, natName, NATS } from "./names.js?v=202611221347";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221347";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221351";
+import { pickNat, natName, NATS } from "./names.js?v=202611221351";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221351";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -231,6 +231,30 @@ function creditDaily(S, c, per) {
     k.rest = eur(Math.max(0, k.rest - Math.max(0, pay - interest)));
   }
   h.credits = h.credits.filter((k) => k.rest > 0);
+}
+
+
+// Freundschaftsspiel: Spielpraxis und Form gegen Fitness
+function friendlyDaily(S, c, daySeed) {
+  const h = c.h, f = h.friendly;
+  if (!f || f.season !== S.season || f.day !== S.day) return;
+  const rng = rngFrom(daySeed, "friendly", c.id);
+  const t = firstTeam(S, c);
+  const opps = [...S.teams.values()].filter((x) => x.status === "active" && x.rank === 1 && x.level >= t.level + 1 && x.level <= t.level + 3 && x.verband === t.verband);
+  const opp = opps.length ? opps[Math.floor(rng() * opps.length)] : null;
+  const out = [];
+  for (const p of h.players) {
+    if (!f.ids.includes(p.id) || p.inj) continue;
+    const gain = (0.12 + 0.18 * rng()) * (formSwing(p) / 0.35) + Math.max(0, -(p.form || 0)) * 0.25;
+    p.form = r2(clamp((p.form || 0) + gain, -1, 1));
+    p.fit = r2(clamp(p.fit - (14 + 10 * rng()) * (1 - 0.03 * sl(h, "athletik")), 0, 100));
+    p.s.fr = (p.s.fr || 0) + 1;
+    if (rng() < 0.006 * INT_RISK[2]) injure(S, c, p, rng, INJURIES, 0, false);
+    out.push(p.name);
+  }
+  const gf = Math.floor(rng() * 5), ga = Math.floor(rng() * 3);
+  userNews(S, c.owner, `Testspiel${opp ? " gegen " + opp.name : ""}: ${gf}:${ga}. Spielpraxis für ${out.length} Spieler – Form steigt, Fitness sinkt.`);
+  h.friendly = null;
 }
 
 // ---------------------------------------------------------------- Catering & Security
@@ -1270,7 +1294,25 @@ function afterMatchHuman(S, X, opp, r, k, compName, isLeague, daySeed) {
   for (const { p, slot } of X.players) { const n = Math.round(DUEL_BASE[slot] * (p.a.zwk / 60) * aggF * (0.6 + 0.8 * rng())); if (n) { bump(p, "zw", n); ev.get(p.id).zw += n; } }
   // Form: Ergebnis, Tore und Vorlagen wirken je nach mentaler Stärke
   const won = (k ? r.ga > r.gh : r.gh > r.ga), lost = (k ? r.ga < r.gh : r.gh < r.ga);
-  for (const { p } of X.players) { const e = ev.get(p.id); const sw = formSwing(p) / 0.35; p.form = r2(clamp((p.form || 0) + sw * ((won ? 0.08 : lost ? -0.08 : 0) + 0.12 * e.g + 0.06 * e.as), -1, 1)); }
+  // Spielernoten (1 = sehr gut … 6 = ungenügend)
+  const gAg = k ? r.gh : r.ga;
+  const grades = [];
+  for (const { p, slot } of X.players) {
+    const e = ev.get(p.id);
+    let g = 3.35 + (won ? -0.35 : lost ? 0.35 : 0) - 0.75 * e.g - 0.45 * e.as;
+    const expZ = DUEL_BASE[slot] * (p.a.zwk / 60); if (expZ > 1) g -= clamp((e.zw - expZ) / expZ, -1, 1) * 0.45;
+    if (slot === "TW") g += gAg === 0 ? -0.8 : 0.35 * (gAg - 1);
+    else if (slot === "IV" || slot === "AV") g += gAg === 0 ? -0.35 : 0.18 * gAg;
+    else if (POS_GROUP[slot] === "O" && e.g === 0 && e.as === 0) g += 0.25;
+    g += (curStrength(p, slot) / Math.max(1, X.X.ovr) - 1) * -2 + (rng() - 0.5) * 1.1;
+    const cardsP = r.st.c.filter((cd) => cd[1] === k && cd[4] === p.id);
+    for (const cd of cardsP) g += cd[3] === "Y" ? 0.2 : 1.3;
+    g = clamp(Math.round(g * 2) / 2, 1, 6);
+    p.lastGrade = g; p.s.nt = (p.s.nt || 0) + g; p.s.nn = (p.s.nn || 0) + 1;
+    grades.push([p.name, slot, g]);
+    const sw = formSwing(p) / 0.35;
+    p.form = r2(clamp((p.form || 0) + sw * ((3.5 - g) * 0.06 + (won ? 0.03 : lost ? -0.03 : 0)), -1, 1));
+  }
   // Leistungsprämien laut Vertrag
   let bonus = 0;
   for (const { p } of X.players) { const b = p.ct?.bonus; if (!b) continue; const e = ev.get(p.id); bonus += b.app + b.duel * e.zw + b.ast * e.as + b.goal * e.g; }
@@ -1296,7 +1338,7 @@ function afterMatchHuman(S, X, opp, r, k, compName, isLeague, daySeed) {
   add("games", 1); add("poss", r.st.p[k]); add("shots", r.st.s[k]); add("on", r.st.o[k]); add("shotsAg", r.st.s[1 - k]); add("fouls", r.st.f[k]);
   add("y", r.st.y[k]); add("r", r.st.r[k]); add("gf", k ? r.ga : r.gh); add("ga", k ? r.gh : r.ga);
   const gfx = k ? r.ga : r.gh, gax = k ? r.gh : r.ga; add(gfx > gax ? "w" : gfx < gax ? "l" : "d", 1);
-  h.reports.push({ season: S.season, day: S.day, comp: compName, h: r.H.t.name, a: r.A.t.name, gh: r.gh, ga: r.ga, st: r.st, k });
+  h.reports.push({ season: S.season, day: S.day, comp: compName, h: r.H.t.name, a: r.A.t.name, gh: r.gh, ga: r.ga, st: r.st, k, grades });
   if (h.reports.length > 40) h.reports.shift();
 }
 function recordLeagueGoals(S, lg, r) {
@@ -1943,6 +1985,15 @@ export function applyAction(S, a, userName, daySeed) {
       S.freeAgents.push({ ...p, id: "fa:" + a.id });
       return true;
     }
+    case "friendly": {
+      if (!h) return fail("Kein Verein.");
+      const ids = (Array.isArray(P.ids) ? P.ids : []).filter((id) => h.players.some((p) => p.id === id && !p.inj));
+      if (ids.length < 1) return fail("Keine einsatzfähigen Spieler ausgewählt.");
+      const day = nextDayNo(S);
+      h.friendly = { season: S.day >= SEASON_DAYS ? S.season + 1 : S.season, day, ids: ids.slice(0, 16) };
+      userNews(S, a.user_id, `Freundschaftsspiel für den nächsten Spieltag angesetzt (${ids.length} Spieler).`);
+      return true;
+    }
     case "captain": {
       if (!h) return fail("Kein Verein.");
       const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
@@ -2223,6 +2274,7 @@ function humanDaily(S, c, daySeed) {
   }
   absences(S, c, daySeed);
   incomingOffers(S, c, daySeed);
+  friendlyDaily(S, c, daySeed);
   loanDaily(S, c, daySeed);
   for (const p of h.players) {
     if (p.inj) {

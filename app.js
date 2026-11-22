@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221347";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221347";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221347";
+import * as E from "./engine.js?v=202611221351";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221351";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221351";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -33,16 +33,29 @@ async function load() {
   if (!seeds.length) return renderWaiting();
   const t0 = performance.now();
   const D = seeds.length - 1;
+  const liveMs = Date.now() - kickoff(info.start_date, D);
+  const live = D >= 1 && E.dayInfo(D).day !== E.SEASON_DAYS && liveMs >= 0 && liveMs < LIVE_LEN;
   let from = null;
   try {
     const rec = await snapGet("main");
-    if (rec && rec.day <= D && rec.fp === snapFp(rec.day)) from = { S: rec.S, day: rec.day };
+    if (rec && rec.day <= (live ? D - 1 : D) && rec.fp === snapFp(rec.day)) from = { S: rec.S, day: rec.day };
+    if (live && !from) { const pr = await snapGet("prev"); if (pr && pr.day === D - 1 && pr.fp === snapFp(pr.day)) from = { S: pr.S, day: pr.day }; }
   } catch (e) { console.warn("Zwischenspeicher nicht lesbar", e); }
   app.fromDay = from ? from.day : 0;
-  app.S = E.simulate(app.world, seeds, actions, members, {
+  let prev = null;
+  const full = E.simulate(app.world, seeds, actions, members, {
     startDate: info.start_date, from,
+    onPrev: (S2, d) => { try { prev = structuredClone({ ...S2, squadCache: new Map() }); if (live) snapPut("prev", { day: d, fp: snapFp(d), S: structuredClone(prev) }).catch(() => {}); } catch (e) { console.warn(e); } },
     onSnapshot: (S2, d) => { try { const snap = structuredClone({ ...S2, squadCache: new Map() }); snapPut("main", { day: d, fp: snapFp(d), S: snap }).catch(() => {}); } catch (e) { console.warn("Zwischenspeicher nicht schreibbar", e); } },
   });
+  app.Slive = full; app.live = null;
+  if (live && prev) {
+    prev.revealed = D - 1; prev.lastSeed = E.hex32(seeds[D - 1]);
+    // Während des Livetickers: Stand vor dem Spieltag anzeigen, eigene neue Eingaben aber schon sichtbar machen
+    for (const a of actions.slice().sort((x, y) => x.id - y.id)) if (Math.max(1, a.eff_day | 0) > D) { try { E.applyAction(prev, a, members[a.user_id], E.hex32(seeds[D])); } catch (e) { console.warn(e); } }
+    app.S = prev; app.live = { day: D, ko: kickoff(info.start_date, D).getTime() };
+  }
+  else app.S = full;
   app.simMs = Math.round(performance.now() - t0);
   render();
 }
@@ -84,6 +97,13 @@ async function poll() {
   } catch (e) { console.warn(e); }
 }
 function tick() {
+  if (app.live) {
+    const el2 = document.getElementById("countdown");
+    if (Date.now() - app.live.ko >= LIVE_LEN) { app.live = null; app.S = app.Slive; render(); return; }
+    const mi = liveMinute(); if (el2) el2.textContent = mi.label;
+    if ((Date.now() / 1000 | 0) % 10 === 0) { const box = document.getElementById("liveticker"); if (box) box.outerHTML = liveCard(); }
+    return;
+  }
   const el = document.getElementById("countdown"); if (!el || !app.info) return;
   const ko = kickoff(app.info.start_date, (app.S?.revealed ?? -1) + 1);
   let ms = ko - Date.now();
@@ -207,6 +227,7 @@ function bindActions(root) {
       if (type === "gfSettings" && el.dataset.task) payload = { tasks: { [el.dataset.task]: el.checked } };
       if (type === "doctor") payload = { follow: el.checked };
       if (type === "ticketAuto") payload = { on: el.checked };
+      if (type === "friendly") payload = { ids: [...document.querySelectorAll(".frsel:checked")].map((x) => x.value) };
       if (type === "credit") payload = { amount: Number(document.getElementById("crAmt")?.value || 0), years: Number(document.getElementById("crYrs")?.value || 3) };
       if (type === "buyPlayer" && payload.mode === "bid") payload.amount = Number(document.getElementById("bidAmt")?.value || 0);
       if (type === "humanOffer") payload.amount = Number(document.getElementById("ho-" + payload.pid)?.value || 0);
@@ -269,6 +290,7 @@ function vStart() {
 function vHome() {
   const c = myClub(), t = E.firstTeam(S(), c), nd = nextDay();
   const parts = [];
+  if (app.live) parts.push(liveCard());
   if (t.status !== "active") {
     parts.push(`<div class="card"><h3>Saisonstart abwarten</h3><p>${esc(c.name)} steigt zum nächsten Saisonumbruch in den Spielbetrieb ein. Bis dahin kannst du Kader, Personal und Anlagen vorbereiten.</p></div>`);
   } else {
@@ -348,11 +370,12 @@ function vKader() {
   const avgFit = h.players.reduce((s2, p) => s2 + p.fit, 0) / Math.max(1, h.players.length);
   const sel = (key, opts, cur) => `<select data-act="tactic" data-key="${key}">${opts.map(([v, n]) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${n}</option>`).join("")}</select>`;
   const open = app.sel.player;
-  const detail = (p) => `<tr><td colspan="15" style="white-space:normal;background:var(--surface2);padding:0"><div style="position:sticky;left:0;width:min(calc(100vw - 64px),1040px);padding:10px">
+  const detail = (p) => `<tr><td colspan="16" style="white-space:normal;background:var(--surface2);padding:0"><div style="position:sticky;left:0;width:min(calc(100vw - 64px),1040px);padding:10px">
     <div class="row" style="justify-content:space-between"><b>${esc(p.name)} · ${E.POS_NAMES[p.pos]}${p.nat ? " · " + esc(E.NAT_NAMES[p.nat] || p.nat) : ""}</b><span class="small muted">Potenzial ${p.age < 30 ? potTxt(h, p) : "–"} · Marktwert ${eur(E.valueOf(p))} · Gehalt ${eur(p.wage)}/Saison</span></div>
     <div class="grid g3" style="gap:4px 16px;margin:8px 0">${E.ATTRS.map((k) => `<div class="row" style="gap:6px"><span class="small" style="width:108px">${E.ATTR_NAMES[k]}</span><span class="bar" style="flex:1"><i style="width:${p.a[k]}%"></i></span><b class="small" style="width:40px;text-align:right">${st(p.a[k])}</b></div>`).join("")}</div>
     <div class="small muted">Stärke auf anderen Positionen: ${E.POSITIONS.filter((x) => x !== p.pos).map((x) => ({ x, v: E.posStrength(p, x) })).sort((a, b) => b.v - a.v).slice(0, 4).map((o) => `${o.x} ${st(o.v)}`).join(" · ")}</div>
     <div class="small muted">Karriere: ${p.c.apps} Spiele, ${p.c.g} Tore, ${p.c.as || 0} Vorlagen, ${p.c.zw || 0} gewonnene Zweikämpfe, ${p.c.y} Gelb, ${p.c.r} Rot</div>
+    <div class="small muted">Noten: letzte <b>${p.lastGrade != null ? String(p.lastGrade).replace(".", ",") : "–"}</b> · Schnitt ${avgGrade(p)} aus ${p.s.nn || 0} Spielen${p.s.fr ? ` · ${p.s.fr} Testspiele` : ""}</div>
     <div class="small muted">Form: <b>${E.formLabel(p.form)}</b> (${p.form > 0 ? "+" : ""}${Math.round((p.form || 0) * E.FORM_AMP * 100)} % Leistung) · Formschwankung ${p.a.men >= 70 ? "gering" : p.a.men >= 40 ? "mittel" : "hoch"} (Mentale Stärke ${Math.round(p.a.men)})${p.major ? ` · ${p.major} schwere Verletzung(en)` : ""}</div>
     <div class="small" style="margin-top:4px">Laune: <b>${E.MOOD_LABEL(p.mood)}</b> (${Math.round(p.mood ?? 60)}/100)${(p.mood ?? 60) < 50 && p.moodWhy ? ` – Grund: ${esc(p.moodWhy)}` : ""}${p.wantsOut ? ' · <span class="crit">will wechseln</span>' : ""} · Rolle: ${E.squadRoles(h).get(p.id)} ${p.id === h.captain ? "· <b>Kapitän</b>" : btn("Zum Kapitän machen", "captain", { id: p.id }, "btn sm")}</div>
     ${ctBox(h, p)}
@@ -370,14 +393,16 @@ function vKader() {
   </div>
   <p class="small muted" style="margin:10px 0 0">Hohe Intensität bringt etwas mehr Leistung und schnellere Entwicklung, kostet aber mehr Fitness und erhöht das Verletzungsrisiko. Pausen bauen Fitness wieder auf. Hohe Aggressivität gewinnt mehr Zweikämpfe (je nach Zweikampfstärke), bringt aber Karten und Sperren. Die Startelf stellt sich automatisch aus den fittesten und stärksten Spielern zusammen.</p></div>
   <div class="row" style="margin-bottom:8px"><span class="muted small">Sortieren:</span><div class="seg">${[["pos", "Position"], ["max", "Stärke"], ["fit", "Fitness"], ["form", "Form"], ["ct", "Vertrag"], ["g", "Tore"]].map(([k, n]) => `<button data-sel="kaderSort" data-v="${k}" aria-pressed="${sortBy === k}">${n}</button>`).join("")}</div><span class="small muted">Tippe auf einen Spieler für Details.</span></div>
-  <div class="card scroll"><table><thead><tr><th>Pos</th><th>Name</th><th class="r">Alter</th><th>Fitness</th><th class="r">Aktuell</th><th class="r">Max</th><th>Form</th><th>Laune</th><th>Status</th><th>Vertrag</th><th class="r">Sp</th><th class="r">Tore</th><th class="r">Vorl.</th><th class="r">Gelb</th><th class="r">Rot</th></tr></thead><tbody>
+  <div class="card scroll"><table><thead><tr><th>Pos</th><th>Name</th><th class="r">Alter</th><th>Fitness</th><th class="r">Aktuell</th><th class="r">Max</th><th>Form</th><th>Laune</th><th>Status</th><th>Vertrag</th><th class="r">Sp</th><th class="r" title="Notenschnitt">Ø</th><th class="r">Tore</th><th class="r">Vorl.</th><th class="r">Gelb</th><th class="r">Rot</th></tr></thead><tbody>
   ${ps.map((p) => `<tr class="${slotOf.has(p.id) ? "xi" : ""}" data-sel="player" data-v="${open === p.id ? "" : esc(p.id)}" style="cursor:pointer"><td>${p.pos}${slotOf.has(p.id) && slotOf.get(p.id) !== p.pos ? `<span class="small muted">→${slotOf.get(p.id)}</span>` : ""}</td><td>${esc(p.name)}${p.id === h.captain ? ' <b title="Kapitän">©</b>' : ""}${p.loan ? ' <span class="pill">Leihe</span>' : ""}${natTag(p)}</td><td class="r">${p.age}</td><td>${fitBar(p.fit)}</td>
-    <td class="r"><b>${st(p.inj ? 0 : E.curStrength(p))}</b></td><td class="r muted">${st(p.max)}</td><td>${formIcon(p.form)}</td><td>${moodIcon(p.mood)}</td><td>${statusOf(p)}${doc(p)}${p.retiring ? ' <span class="pill">Karriereende</span>' : ""}</td><td class="small ${p.ct && p.ct.until <= S().season ? "warn" : ""}">${p.ct ? `bis S${p.ct.until}${p.ct.kind !== "fest" ? " · " + E.CT_KINDS[p.ct.kind] : ""}` : "–"}</td><td class="r">${p.s.apps}</td><td class="r">${p.s.g}</td><td class="r">${p.s.as || 0}</td><td class="r">${p.s.y}</td><td class="r">${p.s.r}</td></tr>${open === p.id ? detail(p) : ""}`).join("")}
-  </tbody></table></div><p class="small muted">Blau markiert: aktuelle Startelf (→ andere Position). Statistik der laufenden Saison inklusive Pokalspielen.</p>`;
+    <td class="r"><b>${st(p.inj ? 0 : E.curStrength(p))}</b></td><td class="r muted">${st(p.max)}</td><td>${formIcon(p.form)}</td><td>${moodIcon(p.mood)}</td><td>${statusOf(p)}${doc(p)}${p.retiring ? ' <span class="pill">Karriereende</span>' : ""}</td><td class="small ${p.ct && p.ct.until <= S().season ? "warn" : ""}">${p.ct ? `bis S${p.ct.until}${p.ct.kind !== "fest" ? " · " + E.CT_KINDS[p.ct.kind] : ""}` : "–"}</td><td class="r">${p.s.apps}</td><td class="r" style="color:${p.s?.nn ? gradeCol(p.s.nt / p.s.nn) : "inherit"}">${avgGrade(p)}</td><td class="r">${p.s.g}</td><td class="r">${p.s.as || 0}</td><td class="r">${p.s.y}</td><td class="r">${p.s.r}</td></tr>${open === p.id ? detail(p) : ""}`).join("")}
+  </tbody></table></div>${friendlyCard(h)}<p class="small muted">Blau markiert: aktuelle Startelf (→ andere Position). Statistik der laufenden Saison inklusive Pokalspielen.</p>`;
 }
 
 
 
+const gradeCol = (g) => (g <= 2 ? "var(--ok)" : g <= 3.5 ? "inherit" : g <= 4.5 ? "var(--warn)" : "var(--crit)");
+const avgGrade = (p) => (p.s?.nn ? (p.s.nt / p.s.nn).toFixed(1).replace(".", ",") : "–");
 const moodIcon = (m = 60) => `<span title="${E.MOOD_LABEL(m)} (${Math.round(m)})">${m >= 80 ? "😀" : m >= 62 ? "🙂" : m >= 45 ? "😐" : m >= 30 ? "🙁" : "😠"}</span>`;
 const natTag = (p) => p.nat && p.nat !== "GER" ? ` <span class="muted small" title="${esc(E.NAT_NAMES[p.nat] || p.nat)}">${p.nat}</span>` : "";
 function kasseTip(c) {
@@ -390,6 +415,16 @@ function kasseTip(c) {
     : a.lvl === 2 ? (a.dir === "ok" ? "„Die Preise passen ungefähr.“" : `„Die Preise sollten eher ${a.dir === "up" ? "höher" : "niedriger"} sein.“`)
     : `Empfehlung: <b>${Math.round(a.f * 100)} %</b> (${price(a.f)})${a.lvl >= 4 ? ` · erwartete Einnahmen je Heimspiel ca. ${eur(a.opt.rev * (a.f === a.opt.f ? 1 : 0.98))} (aktuell ${eur(a.opt.cur)})` : ""}`;
   return `<p class="small" style="margin:6px 0">${who}: ${txt}</p>`;
+}
+function friendlyCard(h) {
+  const nd = nextDay().day;
+  const planned = h.friendly && h.friendly.day === nd ? h.friendly : null;
+  const cand = h.players.filter((p) => !p.inj).sort((a, b) => ((a.form || 0) - (b.form || 0)) || (a.s.apps - b.s.apps));
+  const hint = (p) => (p.form || 0) < -0.15 ? "Formtief" : p.s.apps < 3 ? "wenig Spielpraxis" : p.fit < 70 ? "müde" : "";
+  return `<div class="card" style="margin-top:14px"><h3>Freundschaftsspiel</h3><p class="small muted" style="margin-top:0">Ein Testspiel pro Spieltag: bringt Spielpraxis und Form (vor allem bei Spielern im Formtief oder nach Verletzungen), kostet aber 14–24 Fitness. Findet nach dem Pflichtspiel statt.</p>
+    ${planned ? `<p class="small"><b>Angesetzt für heute</b> mit ${planned.ids.length} Spielern: ${planned.ids.map((id) => esc(h.players.find((p) => p.id === id)?.name || "")).join(", ")}.</p>` : ""}
+    <div style="display:flex;flex-wrap:wrap;gap:4px 14px">${cand.map((p) => `<label class="small" style="display:flex;gap:6px;align-items:center"><input type="checkbox" class="frsel" value="${esc(p.id)}" ${planned?.ids.includes(p.id) ? "checked" : ""}> ${esc(p.name)} <span class="muted">${p.pos} · Fit ${Math.round(p.fit)}${hint(p) ? " · " + hint(p) : ""}</span></label>`).join("")}</div>
+    <div style="margin-top:8px">${btn(planned ? "Aufstellung fürs Testspiel ändern" : "Testspiel ansetzen", "friendly", {}, "btn sm pri")}</div></div>`;
 }
 // ------------------------------------------------------------ Form & Verträge
 function formIcon(f = 0) { const [i, col] = f >= 0.5 ? ["⬆", "var(--ok)"] : f >= 0.15 ? ["↗", "var(--ok)"] : f > -0.15 ? ["→", "var(--muted)"] : f > -0.5 ? ["↘", "var(--warn)"] : ["⬇", "var(--crit)"]; return `<span title="${E.formLabel(f)}" style="color:${col};font-weight:700">${i}</span>`; }
@@ -713,6 +748,61 @@ function roundName(cup, i) {
 
 
 
+
+// ------------------------------------------------------------ Liveticker (18:00 – ca. 19:50)
+const LIVE_LEN = 112 * 60000;
+function liveMinute() {
+  const e = (Date.now() - app.live.ko) / 60000;
+  if (e < 45) return { m: Math.floor(e) + 1, label: `LIVE ${Math.floor(e) + 1}'` };
+  if (e < 60) return { m: 45, label: "Halbzeit" };
+  if (e < 105) return { m: 46 + Math.floor(e - 60), label: `LIVE ${46 + Math.floor(e - 60)}'` };
+  return { m: 90, label: "Abpfiff" };
+}
+const CHANCE_TXT = ["{p} prüft den Torwart – gehalten!", "Distanzschuss von {p}, knapp drüber.", "Pfosten! {p} hat Pech.", "Kopfball nach Ecke – {p} setzt ihn vorbei.", "{p} frei vor dem Tor … vergeben!", "Gefährlicher Freistoß von {p}, die Mauer steht.", "{p} zieht ab – Latte!", "Konter über {p}, im letzten Moment geklärt."];
+function tickerEvents(m, myTid, names) {
+  const st = m.st || { g: [], c: [], s: [0, 0] };
+  const tn = [team(m.h)?.name || "", team(m.a)?.name || ""];
+  const ev = [{ m: 0, t: "Anpfiff!" }, { m: 45.5, t: "Halbzeit." }, { m: 90.5, t: "Abpfiff!" }];
+  const gc = [0, 0];
+  for (const g of st.g) { gc[g[1]]++; ev.push({ m: g[0], k: g[1], goal: true, t: `TOR für ${tn[g[1]]}! ${g[2]}${g[4] ? ` (Vorlage ${g[4]})` : ""}` }); }
+  for (const c2 of st.c) ev.push({ m: c2[0], k: c2[1], t: `${c2[3] === "Y" ? "🟨 Gelb" : c2[3] === "GR" ? "🟨🟥 Gelb-Rot" : "🟥 Rot"} für ${c2[2] || tn[c2[1]]}` });
+  for (let k = 0; k < 2; k++) {
+    const n = Math.max(0, (st.s?.[k] || 0) - gc[k]);
+    for (let i = 0; i < n; i++) {
+      const hsh = E.hash32(`${m.h}:${m.a}:${k}:${i}`) >>> 0;
+      const pl = (k === (m.h === myTid ? 0 : 1) && names.length) ? names[hsh % names.length] : tn[k];
+      ev.push({ m: 1 + (hsh % 90), k, t: CHANCE_TXT[(hsh >>> 5) % CHANCE_TXT.length].replace("{p}", pl) });
+    }
+  }
+  return ev.sort((a, b) => a.m - b.m);
+}
+function liveCard() {
+  if (!app.live) return "";
+  const c = app.Slive && [...app.Slive.clubs.values()].find((x) => x.owner === app.me && x.h);
+  const SL = app.Slive; const D = app.live.day, di = E.dayInfo(D).day;
+  const mi = liveMinute();
+  if (!c) return `<div id="liveticker"></div>`;
+  const t = SL.teams.get(c.teams[0]);
+  const games = [];
+  const lg = t.league ? SL.leagues.get(t.league) : null;
+  const lm = lg?.fixtures?.[di]?.find((m) => m.h === t.id || m.a === t.id); if (lm) games.push([lg.name, lm]);
+  for (const cup of SL.cups) for (const rd of cup.rounds) if (rd && rd.day === di) { const m = rd.matches.find((x) => x.h === t.id || x.a === t.id); if (m) games.push([cup.name, m]); }
+  for (const C of Object.values(SL.euro?.comps || {})) { const lp = C.lp.find((x) => x.day === di); const m = lp?.matches.find((x) => x.h === t.id || x.a === t.id); if (m) games.push([C.name, m]); }
+  const score = (m) => { const g = (m.st?.g || []).filter((x) => x[0] <= mi.m); return `${g.filter((x) => x[1] === 0).length}:${g.filter((x) => x[1] === 1).length}`; };
+  const blocks = games.map(([comp, m]) => {
+    const rep = c.h.reports.find((r) => r.season === SL.season && r.day === di && r.comp === comp);
+    const names = (rep?.grades || []).filter((g) => g[1] !== "TW").map((g) => g[0]);
+    const ev = tickerEvents(m, t.id, names).filter((e) => e.m <= mi.m + (mi.label === "Abpfiff" ? 1 : 0)).reverse();
+    return `<div style="margin-top:8px"><div class="lvl">${esc(comp)}</div><div class="match" style="margin:6px 0"><div class="t">${esc(team(m.h)?.name || SL.teams.get(m.h)?.name || "")}</div><div class="score">${score(m)}</div><div class="t">${esc(team(m.a)?.name || SL.teams.get(m.a)?.name || "")}</div></div>
+      <div class="small" style="max-height:220px;overflow:auto">${ev.map((e) => `<div style="padding:2px 0;${e.goal ? "font-weight:700" : ""}"><span class="muted">${e.m >= 90.5 ? "90'" : e.m === 45.5 ? "45'" : e.m ? Math.floor(e.m) + "'" : ""}</span> ${esc(e.t)}</div>`).join("")}</div></div>`;
+  }).join("");
+  const conf = lg ? (lg.fixtures[di] || []).filter((m) => m !== lm).map((m) => `<div class="row small" style="justify-content:space-between"><span>${esc(SL.teams.get(m.h).name)} – ${esc(SL.teams.get(m.a).name)}</span><b>${score(m)}</b></div>`).join("") : "";
+  return `<div class="card" id="liveticker" style="margin-bottom:14px;border-color:#d40000"><div class="row" style="justify-content:space-between"><h3><span style="color:#d40000">●</span> Liveticker</h3><b>${mi.label}</b></div>
+    ${blocks || '<p class="small muted">Heute kein Spiel für deine Mannschaft.</p>'}
+    ${conf ? `<details style="margin-top:8px"><summary class="small">Konferenz ${esc(lg.name)}</summary>${conf}</details>` : ""}
+    <p class="small muted" style="margin-top:6px">Die Tabellen zeigen bis zum Abpfiff den Stand vor dem Spieltag.</p></div>`;
+}
+
 // ------------------------------------------------------------ Schlagzeilen (je Liga: Dorfblatt … Boulevard)
 const PAPERS = [
   ["Der Gemeindebote", "Mitteilungsblatt mit Sportecke"], ["Kreis-Anzeiger", "Lokalteil Sport"], ["Bezirksrundschau", "Regionalsport"],
@@ -765,7 +855,7 @@ const HL_CTX = {
   red: ["Platzverweis für {red}", "{red} sieht Rot", "Rote Karte gegen {red} schwächt {team}", "Rot-Sünder {red} lässt {team} im Stich", "{RED} DREHT DURCH – ROT! TEAM IM STICH GELASSEN!"],
 };
 function hlFill(tpl, v) { return tpl.replace(/\{(\w+)\}/g, (_, k) => { const lo = k.toLowerCase(); const val = v[lo] ?? ""; return k === k.toUpperCase() && k.length > 1 ? String(val).toUpperCase() : val; }); }
-function hlPick(arr, seed) { return arr[E.hash32(seed) % arr.length]; }
+function hlPick(arr, seed) { return arr[(E.hash32(seed) >>> 0) % arr.length]; }
 function matchFacts(m, tid) {
   const k = m.h === tid ? 0 : 1, gf = k ? m.ga : m.gh, ga = k ? m.gh : m.ga;
   const goals = (m.st?.g || []).filter((g) => g[1] === k && g[3]); const cnt = {}; for (const g of goals) cnt[g[2]] = (cnt[g[2]] || 0) + 1;
@@ -773,11 +863,12 @@ function matchFacts(m, tid) {
   const red = (m.st?.c || []).find((c2) => c2[1] === k && c2[3] !== "Y" && c2[2]);
   return { gf, ga, opp: team(k ? m.h : m.a)?.name || "?", scorer: top ? top[0] : null, scorerN: top ? top[1] : 0, red: red?.[2] || null, score: `${gf}:${ga}` };
 }
-function headlineFor(tier, t, m, comp, seed) {
+function headlineFor(tier, t, m, comp, seed, needTeam = false) {
   const f = matchFacts(m, t.id);
   const d = f.gf - f.ga, kind = d >= 3 ? "bigwin" : d > 0 ? "win" : d === 0 ? "draw" : d <= -3 ? "bigloss" : "loss";
   let pool = HL[kind][tier];
   if (!f.scorer) pool = pool.filter((x) => !/\{scorer\}|\{SCORER\}/.test(x));
+  if (needTeam) pool = pool.filter((x) => /\{team\}|\{TEAM\}/.test(x));
   const v = { team: t.name, opp: f.opp, score: f.score, scorer: f.scorer || "", ga: f.ga, red: f.red || "" };
   const main = hlFill(hlPick(pool.length ? pool : HL[kind][tier].slice(0, 1), seed), v);
   const extra = [];
@@ -802,7 +893,7 @@ function headlinesCard(c) {
   else if (pos && pos > n - 2 && day >= 3) items.push([hlFill(HL_CTX.bottom[tier], v), false]);
   // Rest der Liga: höchster Sieg des Spieltags
   const fx = (lg?.fixtures?.[day] || []).filter((m) => m.gh != null && m.h !== t.id && m.a !== t.id).sort((a, b) => Math.abs(b.gh - b.ga) - Math.abs(a.gh - a.ga));
-  if (fx[0] && Math.abs(fx[0].gh - fx[0].ga) >= 2) { const m = fx[0], w = m.gh > m.ga ? team(m.h) : team(m.a); const h = headlineFor(tier, w, m, null, `${m.h}:${m.a}:${day}`); items.push([h.main, false]); }
+  if (fx[0] && Math.abs(fx[0].gh - fx[0].ga) >= 2) { const m = fx[0], w = m.gh > m.ga ? team(m.h) : team(m.a); const h = headlineFor(tier, w, m, null, `${m.h}:${m.a}:${day}`, true); items.push([h.main, false]); }
   if (!items.length) return "";
   const style = tier === 4 ? "font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:.2px" : "";
   return `<div class="card" style="margin-top:14px${tier === 4 ? ";border-top:4px solid #d40000" : ""}"><div class="row" style="justify-content:space-between"><h3 style="${tier === 4 ? "color:#d40000;font-style:italic" : ""}">${paper}</h3><span class="small muted">${sub} · Spieltag ${day}</span></div>
@@ -888,7 +979,8 @@ function matchReport(r) {
   return `<div class="card" style="margin-bottom:10px"><div class="row" style="justify-content:space-between"><span class="lvl">${esc(r.comp)} · Saison ${r.season}, Tag ${r.day}</span><span class="pill ${won ? "ok" : lost ? "crit" : ""}">${won ? "Sieg" : lost ? "Niederlage" : "Remis"}</span></div>
     <div class="match" style="margin:6px 0"><div class="t">${esc(r.h)}</div><div class="score">${r.gh}:${r.ga}</div><div class="t">${esc(r.a)}</div></div>
     <table><tbody>${row("Ballbesitz", st.p[0], st.p[1], (x) => x + " %")}${row("Torschüsse", st.s[0], st.s[1])}${row("aufs Tor", st.o[0], st.o[1])}${row("Fouls", st.f[0], st.f[1])}${row("Gelbe Karten", st.y[0], st.y[1])}${row("Rote Karten", st.r[0], st.r[1])}</tbody></table>
-    ${ev.length ? `<div class="small" style="margin-top:6px">${ev.map((e) => `<div style="text-align:${e.k ? "right" : "left"}"><span class="muted">${e.m}'</span> ${e.t}</div>`).join("")}</div>` : ""}</div>`;
+    ${ev.length ? `<div class="small" style="margin-top:6px">${ev.map((e) => `<div style="text-align:${e.k ? "right" : "left"}"><span class="muted">${e.m}'</span> ${e.t}</div>`).join("")}</div>` : ""}
+    ${r.grades?.length ? `<div class="small" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><b>Noten:</b> ${r.grades.map(([n, pos, g]) => `${esc(n)} (${pos}) <b style="color:${gradeCol(g)}">${String(g).replace(".", ",")}</b>`).join(" · ")}</div>` : ""}</div>`;
 }
 function vStatistik() {
   const c = myClub(), h = c.h, ts = h.tstats || {};
