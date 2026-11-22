@@ -2,9 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221301";
-import { pickNat, natName, NATS } from "./names.js?v=202611221301";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221301";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221341";
+import { pickNat, natName, NATS } from "./names.js?v=202611221341";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221341";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -46,6 +46,81 @@ export const LV = {
   11: { name: "3. Kreisklasse", top: 6.5, bot: 3, tv: 0, sponsor: 1500, att: 25, price: 0, cap: 300, fixed: 1200, match: 25, prize: 80, value: 6e3, fac: 0 },
 };
 export const levelMid = (l) => (LV[l].top + LV[l].bot) / 2;
+
+// ---------------------------------------------------------------- Transferfenster, Gebote, Angebote
+export const WINDOWS = { sommer: [1, 7], winter: [17, 20] };
+export const nextDayNo = (S) => (S.day >= SEASON_DAYS || !S.day ? 1 : S.day + 1);
+// Aktionen wirken am nächsten Spieltag: Fenster gilt für diesen Tag (am Saisonumbruch beginnt das Sommerfenster)
+export function transferWindow(S, day = nextDayNo(S)) {
+  for (const [k, [a, b]] of Object.entries(WINDOWS)) if (day >= a && day <= b) return { name: k === "sommer" ? "Sommer" : "Winter", until: b };
+  return null;
+}
+export function nextWindow(S, day = nextDayNo(S)) { return day < WINDOWS.winter[0] && day > WINDOWS.sommer[1] ? WINDOWS.winter[0] : WINDOWS.sommer[0]; }
+export function bidThreshold(S, m) { return eur(m.price * (0.78 + 0.2 * ((hash32("bid:" + m.id + ":" + S.season) % 1000) / 1000))); }
+const moodAdd = (p, d) => { p.mood = clamp((p.mood ?? 65) + d, 0, 100); };
+function chemistryHit(h, n) { h.chem = clamp((h.chem ?? 65) - n, 20, 100); }
+function incomingOffers(S, c, daySeed) {
+  const h = c.h; h.offersIn = (h.offersIn || []).filter((o) => o.until >= (S.gday || 0) && transferWindow(S, S.day));
+  if (!transferWindow(S, S.day)) { h.offersIn = []; return; }
+  const t = firstTeam(S, c), L = Math.min(t.level, 11);
+  const rng = rngFrom(daySeed, "offers", c.id);
+  const avg = h.players.reduce((a, p) => a + p.max, 0) / Math.max(1, h.players.length);
+  for (const p of h.players) {
+    if (p.loan || h.offersIn.length >= 4 || h.offersIn.some((o) => o.pid === p.id)) continue;
+    const q = 0.012 * (p.max > avg ? 1.6 : 0.6) * ((p.form || 0) > 0.3 ? 1.5 : 1) * (p.age < 25 ? 1.3 : p.age > 31 ? 0.5 : 1) * ((p.mood ?? 65) < 35 ? 2 : 1);
+    if (rng() >= q) continue;
+    const buyers = [...S.teams.values()].filter((x) => x.status === "active" && x.rank === 1 && !S.clubs.get(x.clubId)?.h && x.level >= Math.max(1, L - 2) && x.level <= L && x.str * AI_FIT >= p.max * 0.92 && (L < 5 || x.verband === t.verband));
+    if (!buyers.length) continue;
+    const b = buyers[Math.floor(rng() * buyers.length)];
+    const amount = eur(valueOf(p) * (0.85 + 0.55 * rng()) * (1 + (L - b.level) * 0.1));
+    if (p.ct?.clause && amount >= p.ct.clause) {
+      // Ausstiegsklausel gezogen: Wechsel ist nicht zu verhindern
+      if (h.players.length <= 14) continue;
+      ledger(h, "in", "Transfers", p.ct.clause);
+      h.players = h.players.filter((x) => x !== p);
+      userNews(S, c.owner, `Ausstiegsklausel gezogen! ${b.name} zahlt ${fmt(p.ct.clause)} – ${p.name} ist weg.`);
+      news(S, `Transfer: ${b.name} zieht die Ausstiegsklausel von ${p.name} (${c.name}, ${fmt(p.ct.clause)}).`);
+      continue;
+    }
+    h.offersIn.push({ id: "o" + (S.gday || 0) + ":" + p.id, pid: p.id, name: p.name, from: b.id, amount, until: (S.gday || 0) + 3 });
+    userNews(S, c.owner, `Angebot: ${b.name} bietet ${fmt(amount)} für ${p.name} (Marktwert ${fmt(valueOf(p))}). Antwort unter Transfers.`);
+  }
+}
+// KI-Transfers als Meldungen (Profiligen), verschieben leicht die Stärke
+function aiTransfers(S, daySeed) {
+  if (!transferWindow(S, S.day)) return;
+  const rng = rngFrom(daySeed, "aitransfer");
+  const pro = [...S.teams.values()].filter((t) => t.status === "active" && t.rank === 1 && t.level <= 3 && !S.clubs.get(t.clubId)?.h);
+  for (let i = 0; i < 2 && pro.length > 2; i++) {
+    const from = pro[Math.floor(rng() * pro.length)];
+    const tos = pro.filter((t) => t !== from && t.level <= from.level);
+    const to = tos.length ? tos[Math.floor(rng() * tos.length)] : null;
+    const sq = aiSquad(S, from).slice().sort((a, b) => b.max - a.max).slice(0, 8);
+    const p = sq[Math.floor(rng() * sq.length)]; if (!p || !to) continue;
+    const price = eur(valueOf(p) * (0.9 + 0.6 * rng()));
+    S.taken.add(p.id);
+    from.str = r2(from.str * 0.995); to.str = r2(to.str * 1.004);
+    news(S, `Transfer: ${p.name} (${p.nat || "GER"}) wechselt von ${from.name} zu ${to.name} – Ablöse ${fmt(price)}.`);
+  }
+}
+// Leihspieler: Entwicklung beim anderen Verein, Gehaltsanteil
+function loanDaily(S, c, daySeed) {
+  const h = c.h; if (!h.loaned?.length) return;
+  const rng = rngFrom(daySeed, "loanDev", c.id);
+  let wage = 0;
+  for (const l of h.loaned) {
+    const p = l.p; wage += p.wage * (1 - l.share);
+    p.s.apps = (p.s.apps || 0) + (rng() < 0.7 ? 1 : 0);
+    if (p.max < p.pot && p.age < 30) {
+      const f = clamp((p.max + (p.pot - p.max) * 0.006 * (0.8 + 0.6 * rng())) / Math.max(0.5, p.max), 0.9, 1.1);
+      for (const k of ATTRS) p.a[k] = r2(clamp(p.a[k] * f, 0.5, 99.99));
+      refreshPlayer(p);
+    }
+    p.form = r2(clamp((p.form || 0) * 0.9 + 0.05, -1, 1));
+  }
+  ledger(h, "out", "Gehälter Spieler", wage / MATCHDAYS);
+}
+
 // ---------------------------------------------------------------- Catering & Security
 export const CATERING = [
   ["kein Angebot", "Wer Durst hat, bringt sich was mit."],
@@ -91,8 +166,8 @@ export function contractDemand(p, years) {
   const yf = p.age >= 31 ? 1 + 0.05 * (years - 1) : p.age <= 23 ? 1 - 0.02 * (years - 1) : 1 + 0.02 * (years - 1);
   return base * yf;
 }
-export function contractOffers(p, years) {
-  const D = contractDemand(p, years), e = expectedEvents(p);
+export function contractOffers(p, years, clause = false) {
+  const D = contractDemand(p, years) * (clause ? 0.92 : 1), e = expectedEvents(p);
   return Object.keys(CT_KINDS).map((kind) => {
     const [fix, bon] = CT_SPLIT[kind];
     const pool = D * bon;
@@ -1254,7 +1329,7 @@ function gfDaily(S, c, daySeed) {
     else { h.intensity = 3; h.minFit = 60; }
   }
   // Kader auffüllen
-  if (T.squad && S.day % 2 === 1) {
+  if (T.squad && S.day % 2 === 1 && transferWindow(S, S.day)) {
     const ok = h.players.filter((p) => !p.inj);
     const need = { TW: 2, D: 6, M: 6, O: 5 };
     const have = { TW: 0, D: 0, M: 0, O: 0 };
@@ -1571,23 +1646,43 @@ export function applyAction(S, a, userName, daySeed) {
       if (h.players.length >= 30) return fail("Kader voll (max. 30).");
       const m = marketFor(S, club, daySeed).find((p) => p.id === P.id);
       if (!m) return fail("Spieler nicht mehr auf dem Markt.");
-      if (h.cash < m.price) return fail("Nicht genug Geld.");
-      const yrs = clamp(Math.round(Number(P.years)) || 2, 1, 5);
-      const off = contractOffers(m, yrs).find((o) => o.kind === (CT_KINDS[P.kind] ? P.kind : "mix"));
+      const win = transferWindow(S);
+      if (m.from && !win) return fail("Transferfenster geschlossen – nur vereinslose Spieler können verpflichtet werden.");
+      const mode = P.mode === "bid" ? "bid" : P.mode === "loan" ? "loan" : "buy";
+      let price = m.price;
+      if (mode === "bid") {
+        const amount = eur(Number(P.amount) || 0);
+        const thr = bidThreshold(S, m);
+        if (amount < thr) { userNews(S, a.user_id, `Gebot abgelehnt: ${m.from ? tm(S, m.from).name : "Der Berater"} will für ${m.name} mindestens ${fmt(Math.ceil(thr * 1.02 / 100) * 100)}.`); return false; }
+        price = amount;
+      }
+      if (mode === "loan") {
+        if (!m.from || m.age > 23) return fail("Ausleihen geht nur bei jungen Spielern (bis 23) anderer Vereine.");
+        price = eur(valueOf(m) * 0.08);
+      }
+      if (h.cash < price) return fail("Nicht genug Geld.");
+      const yrs = mode === "loan" ? 1 : clamp(Math.round(Number(P.years)) || 2, 1, 5);
+      const off = contractOffers(m, yrs, !!P.clause).find((o) => o.kind === (CT_KINDS[P.kind] ? P.kind : "mix"));
       if (m.age >= 33 && yrs > 2) return fail(`${m.name} unterschreibt in seinem Alter höchstens 2 Jahre.`);
-      ledger(h, "out", "Transfers", m.price);
+      ledger(h, "out", mode === "loan" ? "Leihgebühren" : "Transfers", price);
       S.taken.add(m.id); S.freeAgents = S.freeAgents.filter((x) => x.id !== m.id);
       const np = { id: "h" + club.id + ":" + m.id, name: m.name, nat: m.nat, pos: m.pos, age: m.age, a: { ...m.a }, max: m.max, pot: m.pot, wage: off.base,
-        fit: m.inj ? 0 : 100, form: 0, inj: null, ban: 0, s: newStats(), c: newStats() };
-      setContract(np, off, ctUntil(S, yrs));
+        fit: m.inj ? 0 : 100, form: 0, inj: null, ban: 0, s: newStats(), c: newStats(), mood: 70, joined: S.gday || 0 };
+      setContract(np, off, mode === "loan" ? S.season : ctUntil(S, yrs));
+      if (mode === "loan") np.loan = { from: m.from, until: S.season };
+      if (P.clause && mode !== "loan") np.ct.clause = eur(valueOf(m) * 1.6);
       h.players.push(np);
-      if (m.from) { const ft = S.teams.get(m.from); ft.str = r2(ft.str * 0.997); }
-      userNews(S, a.user_id, `${m.name} (${m.pos}, ${m.max.toFixed(2)}) verpflichtet für ${fmt(m.price)}.`);
+      chemistryHit(h, 4);
+      if (m.from) { const ft = S.teams.get(m.from); ft.str = r2(ft.str * (mode === "loan" ? 0.999 : 0.997)); }
+      userNews(S, a.user_id, mode === "loan" ? `${m.name} (${m.pos}) bis Saisonende ausgeliehen, Leihgebühr ${fmt(price)}.` : `${m.name} (${m.pos}, ${m.max.toFixed(2)}) verpflichtet für ${fmt(price)}.`);
+      if (mode !== "loan" && m.from) news(S, `Transfer: ${m.name} wechselt von ${tm(S, m.from).name} zu ${club.name} (${fmt(price)}).`);
       return true;
     }
     case "sellPlayer": {
       if (!h) return fail("Kein Verein.");
+      if (!transferWindow(S)) return fail("Transferfenster geschlossen.");
       const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
+      if (p.loan) return fail("Leihspieler können nicht verkauft werden.");
       if (h.players.length <= 14) return fail("Mindestens 14 Spieler nötig.");
       const price = eur(valueOf(p) * 0.8);
       ledger(h, "in", "Transfers", price);
@@ -1595,9 +1690,79 @@ export function applyAction(S, a, userName, daySeed) {
       userNews(S, a.user_id, `${p.name} verkauft für ${fmt(price)}.`);
       return true;
     }
+    case "loanOut": {
+      if (!h) return fail("Kein Verein.");
+      if (!transferWindow(S)) return fail("Transferfenster geschlossen.");
+      const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
+      if (p.loan) return fail("Leihspieler können nicht weiterverliehen werden.");
+      if (h.players.length <= 14) return fail("Mindestens 14 Spieler nötig.");
+      const L = Math.min(firstTeam(S, club).level, 11);
+      const cand = [...S.teams.values()].filter((t) => t.status === "active" && t.rank === 1 && !S.clubs.get(t.clubId)?.h && t.level >= Math.max(1, L - 1) && t.level <= L + 2 && Math.abs(t.str * AI_FIT - p.max) < 12);
+      if (!cand.length) return fail(`Kein Verein findet ${p.name} passend.`);
+      const to = cand[hash32("loan:" + p.id + S.season) % cand.length];
+      const share = clamp(0.5 + (p.max - to.str * AI_FIT) / 20, 0.3, 1);
+      h.players = h.players.filter((x) => x !== p);
+      h.loaned = h.loaned || [];
+      h.loaned.push({ p, to: to.id, share: r2(share), until: S.season });
+      p.inj = null; p.ban = 0;
+      userNews(S, a.user_id, `${p.name} wird bis Saisonende an ${to.name} verliehen – dort zahlt man ${Math.round(share * 100)} % seines Gehalts.`);
+      return true;
+    }
+    case "offerAnswer": {
+      if (!h) return fail("Kein Verein.");
+      const o = (h.offersIn || []).find((x) => x.id === P.id); if (!o) return fail("Angebot nicht mehr gültig.");
+      h.offersIn = h.offersIn.filter((x) => x !== o);
+      const p = h.players.find((x) => x.id === o.pid);
+      if (!P.accept || !p) { if (p) moodAdd(p, o.amount > valueOf(p) ? -8 : 0); return true; }
+      if (!transferWindow(S)) return fail("Transferfenster geschlossen.");
+      if (h.players.length <= 14) return fail("Mindestens 14 Spieler nötig.");
+      ledger(h, "in", "Transfers", o.amount);
+      h.players = h.players.filter((x) => x !== p);
+      const ft = S.teams.get(o.from); if (ft) ft.str = r2(ft.str * 1.002);
+      userNews(S, a.user_id, `${p.name} wechselt für ${fmt(o.amount)} zu ${ft?.name || "einem anderen Verein"}.`);
+      news(S, `Transfer: ${p.name} wechselt von ${club.name} zu ${ft?.name} (${fmt(o.amount)}).`);
+      return true;
+    }
+    case "humanOffer": {
+      if (!h) return fail("Kein Verein.");
+      if (!transferWindow(S)) return fail("Transferfenster geschlossen – Transfers unter Mitspielern nur im Fenster.");
+      const tc = [...S.clubs.values()].find((x) => x.h && x.h.players.some((q) => q.id === P.pid));
+      if (!tc || tc === club) return fail("Spieler nicht gefunden.");
+      const amount = eur(Number(P.amount) || 0);
+      if (amount <= 0 || amount > h.cash) return fail("Ungültiger Betrag oder nicht genug Geld.");
+      S.hoffers = S.hoffers || [];
+      const p = tc.h.players.find((q) => q.id === P.pid);
+      if (p.loan) return fail("Leihspieler sind nicht abgebbar.");
+      S.hoffers.push({ id: "ho" + a.id, from: club.id, to: tc.id, pid: p.id, name: p.name, amount, until: (S.gday || 0) + 3 });
+      userNews(S, tc.owner, `Angebot von ${club.name}: ${fmt(amount)} für ${p.name}. Antwort unter Transfers.`);
+      userNews(S, a.user_id, `Angebot über ${fmt(amount)} für ${p.name} an ${tc.name} geschickt.`);
+      return true;
+    }
+    case "humanAnswer": {
+      if (!h) return fail("Kein Verein.");
+      const o = (S.hoffers || []).find((x) => x.id === P.id && (x.to === club.id || x.from === club.id)); if (!o) return fail("Angebot nicht mehr gültig.");
+      S.hoffers = S.hoffers.filter((x) => x !== o);
+      const buyer = S.clubs.get(o.from), seller = S.clubs.get(o.to);
+      if (o.from === club.id) { userNews(S, seller.owner, `${buyer.name} hat das Angebot für ${o.name} zurückgezogen.`); return true; }
+      if (!P.accept) { userNews(S, buyer.owner, `${seller.name} lehnt dein Angebot für ${o.name} ab.`); return true; }
+      if (!transferWindow(S)) return fail("Transferfenster geschlossen.");
+      const p = seller.h.players.find((q) => q.id === o.pid);
+      if (!p) return fail("Spieler nicht mehr im Kader.");
+      if (seller.h.players.length <= 14) return fail("Mindestens 14 Spieler nötig.");
+      if (buyer.h.players.length >= 30) return fail(`${buyer.name} hat keinen Platz im Kader.`);
+      if (buyer.h.cash < o.amount) { userNews(S, buyer.owner, `Transfer von ${o.name} geplatzt – nicht genug Geld.`); return fail(`${buyer.name} kann nicht mehr bezahlen.`); }
+      ledger(buyer.h, "out", "Transfers", o.amount); ledger(seller.h, "in", "Transfers", o.amount);
+      seller.h.players = seller.h.players.filter((x) => x !== p);
+      p.joined = S.gday || 0; p.mood = 70; buyer.h.players.push(p); chemistryHit(buyer.h, 4);
+      userNews(S, buyer.owner, `Transfer perfekt: ${p.name} kommt für ${fmt(o.amount)} von ${seller.name}.`);
+      userNews(S, seller.owner, `${p.name} wechselt für ${fmt(o.amount)} zu ${buyer.name}.`);
+      news(S, `Transfer unter Managern: ${p.name} wechselt von ${seller.name} zu ${buyer.name} (${fmt(o.amount)}).`);
+      return true;
+    }
     case "releasePlayer": {
       if (!h) return fail("Kein Verein.");
       const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
+      if (p.loan) return fail("Leihspieler gehen zum Saisonende zurück.");
       if (h.players.length <= 14) return fail("Mindestens 14 Spieler nötig.");
       ensureContract(S, p);
       const remain = Math.max(0, p.ct.until - S.season) + Math.max(0, MATCHDAYS - S.day) / MATCHDAYS;
@@ -1613,9 +1778,11 @@ export function applyAction(S, a, userName, daySeed) {
       const yrs = clamp(Math.round(Number(P.years)) || 1, 1, 5);
       if (p.age >= 33 && yrs > 2) return fail(`${p.name} unterschreibt in seinem Alter höchstens 2 Jahre.`);
       if (p.retiring) return fail(`${p.name} beendet zum Saisonende seine Karriere.`);
-      const off = contractOffers(p, yrs).find((o) => o.kind === (CT_KINDS[P.kind] ? P.kind : "mix"));
+      if (p.loan) return fail("Leihspieler gehen zum Saisonende zurück.");
+      const off = contractOffers(p, yrs, !!P.clause).find((o) => o.kind === (CT_KINDS[P.kind] ? P.kind : "mix"));
       const until = Math.max(p.ct.until, S.season - 1 + (S.day > 17 ? 1 : 0)) + yrs;
       setContract(p, off, until);
+      if (P.clause) p.ct.clause = eur(valueOf(p) * 1.6);
       userNews(S, a.user_id, `${p.name} verlängert bis Saison ${until} (${CT_KINDS[off.kind]}, ${fmt(off.base)} fix pro Saison).`);
       return true;
     }
@@ -1715,6 +1882,8 @@ export function playDay(S, g, daySeed) {
   }
   // Europapokal
   if (S.euro) euroDay(S, d, daySeed);
+  aiTransfers(S, daySeed);
+  if (S.hoffers) S.hoffers = S.hoffers.filter((o) => o.until > (S.gday || 0) && transferWindow(S, d));
   // Menschliche Vereine: Tageskosten, Training
   for (const c of S.clubs.values()) if (c.h) humanDaily(S, c, daySeed);
   // KI-Form: leichte Schwankung
@@ -1849,11 +2018,13 @@ function humanDaily(S, c, daySeed) {
     p.form = r2(clamp((p.form || 0) * 0.85 + (frng() - 0.5) * 2 * sw * 0.35, -1, 1));
   }
   if (S.day === 20) {
-    const exp = h.players.filter((p) => p.ct.until <= S.season && !p.retiring);
+    const exp = h.players.filter((p) => p.ct.until <= S.season && !p.retiring && !p.loan);
     if (exp.length) userNews(S, c.owner, `Verträge laufen zum Saisonende aus: ${exp.map((p) => p.name).join(", ")}. Verlängern im Kader.`);
   }
   if (S.day === 25) retirementCheck(S, c, daySeed);
   absences(S, c, daySeed);
+  incomingOffers(S, c, daySeed);
+  loanDaily(S, c, daySeed);
   for (const p of h.players) {
     if (p.inj) {
       p.fit = 0;
@@ -2059,6 +2230,12 @@ function seasonEnd(S, daySeed) {
         userNews(S, c.owner, `GF Sport verlängert mit ${p.name} bis Saison ${S.season + 2}.`);
       }
     }
+    const back = h.players.filter((p) => p.loan);
+    if (back.length) userNews(S, c.owner, "Leihe beendet, zurück zum Stammverein: " + back.map((p) => p.name).join(", "));
+    h.players = h.players.filter((p) => !p.loan);
+    for (const l of h.loaned || []) { l.p.fit = 100; h.players.push(l.p); }
+    if (h.loaned?.length) userNews(S, c.owner, "Zurück von der Leihe: " + h.loaned.map((l) => `${l.p.name} (jetzt ${l.p.max.toFixed(2)})`).join(", "));
+    h.loaned = [];
     const leaving = h.players.filter((p) => !p.retiring && p.ct && p.ct.until <= S.season);
     if (leaving.length) userNews(S, c.owner, "Vertrag ausgelaufen, ablösefrei weg: " + leaving.map((p) => p.name).join(", "));
     for (const p of leaving) S.freeAgents.push({ ...p, id: "fa:" + S.season + ":" + p.id, ct: null });
@@ -2090,9 +2267,12 @@ function seasonEnd(S, daySeed) {
 // ---------------------------------------------------------------- Gesamt-Simulation
 // seeds: Array, seeds[g] = Hex-String für globalen Tag g (0 = Vorsaison). actions: [{id,user_id,type,payload,eff_day}]
 export function simulate(world, seeds, actions, members = {}, opts = {}) {
-  const S0 = hex32(seeds[0]);
-  const S = createState(world, S0);
-  S.startDate = opts.startDate || null;
+  // opts.from = { S, day }: Spielstand nach playDay(day) (vor den Aktionen des Folgetags) – Simulation läuft ab day+1 weiter.
+  // opts.onSnapshot(S, day): wird nach dem letzten gespielten Tag mit dem Zustand aufgerufen (vor ausstehenden Aktionen).
+  let S, g0 = 1;
+  if (opts.from && opts.from.day <= seeds.length - 1) { S = opts.from.S; g0 = opts.from.day + 1; }
+  else { S = createState(world, hex32(seeds[0])); S.startDate = opts.startDate || null; }
+  if (opts.startDate) S.startDate = opts.startDate;
   const byDay = new Map();
   for (const a of actions.slice().sort((x, y) => x.id - y.id)) {
     const d = Math.max(1, a.eff_day | 0);
@@ -2101,10 +2281,14 @@ export function simulate(world, seeds, actions, members = {}, opts = {}) {
   }
   for (const [uid, name] of Object.entries(members)) if (!S.users.has(uid)) S.users.set(uid, { id: uid, name, clubId: null, wallet: 0, role: null, news: [] });
   const D = seeds.length - 1;
-  for (let g = 1; g <= D + 1; g++) {
+  for (let g = g0; g <= D + 1; g++) {
     const prevSeed = hex32(seeds[g - 1]);
     for (const a of byDay.get(g) || []) applyAction(S, a, members[a.user_id], prevSeed);
-    if (g <= D) playDay(S, g, hex32(seeds[g]));
+    if (g <= D) {
+      if (g === D && opts.onPrev) opts.onPrev(S, g - 1);
+      playDay(S, g, hex32(seeds[g]));
+      if (g === D && opts.onSnapshot) opts.onSnapshot(S, g);
+    }
   }
   S.revealed = D;
   S.lastSeed = hex32(seeds[D]);

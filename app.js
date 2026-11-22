@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221301";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221301";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221301";
+import * as E from "./engine.js?v=202611221341";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221341";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221341";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -32,10 +32,38 @@ async function load() {
   app.sig = seeds.length + ":" + actions.length;
   if (!seeds.length) return renderWaiting();
   const t0 = performance.now();
-  app.S = E.simulate(app.world, seeds, actions, members, { startDate: info.start_date });
+  const D = seeds.length - 1;
+  let from = null;
+  try {
+    const rec = await snapGet("main");
+    if (rec && rec.day <= D && rec.fp === snapFp(rec.day)) from = { S: rec.S, day: rec.day };
+  } catch (e) { console.warn("Zwischenspeicher nicht lesbar", e); }
+  app.fromDay = from ? from.day : 0;
+  app.S = E.simulate(app.world, seeds, actions, members, {
+    startDate: info.start_date, from,
+    onSnapshot: (S2, d) => { try { const snap = structuredClone({ ...S2, squadCache: new Map() }); snapPut("main", { day: d, fp: snapFp(d), S: snap }).catch(() => {}); } catch (e) { console.warn("Zwischenspeicher nicht schreibbar", e); } },
+  });
   app.simMs = Math.round(performance.now() - t0);
   render();
 }
+// ------------------------------------------------------------ Spielstand-Zwischenspeicher (IndexedDB)
+const APP_V = new URL(import.meta.url).searchParams.get("v") || "dev";
+function cyrb53(str, seed = 0) {
+  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0; i < str.length; i++) { const ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+function snapFp(d) {
+  const acts = app.actions.filter((a) => Math.max(1, a.eff_day | 0) <= d).sort((x, y) => x.id - y.id).map((a) => [a.id, a.user_id, a.type, a.payload, a.eff_day]);
+  return [APP_V, MODE, app.world.version || "", app.info?.start_date || "", cyrb53(app.seeds.slice(0, d + 1).join(",")), acts.length, cyrb53(JSON.stringify(acts))].join("|");
+}
+function idb() {
+  return new Promise((res, rej) => { const r = indexedDB.open("anstoss", 1); r.onupgradeneeded = () => r.result.createObjectStore("snap"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+}
+async function snapGet(k) { const db = await idb(); return new Promise((res, rej) => { const q = db.transaction("snap").objectStore("snap").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+async function snapPut(k, v) { const db = await idb(); return new Promise((res, rej) => { const tx = db.transaction("snap", "readwrite"); tx.objectStore("snap").put(v, k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
 async function loadMsgs() {
   try { app.msgs = await backend.messages(); app.chatError = null; } catch (e) { app.msgs = app.msgs || []; app.chatError = e.message || String(e); }
 }
@@ -179,6 +207,8 @@ function bindActions(root) {
       if (type === "gfSettings" && el.dataset.task) payload = { tasks: { [el.dataset.task]: el.checked } };
       if (type === "doctor") payload = { follow: el.checked };
       if (type === "ticketAuto") payload = { on: el.checked };
+      if (type === "buyPlayer" && payload.mode === "bid") payload.amount = Number(document.getElementById("bidAmt")?.value || 0);
+      if (type === "humanOffer") payload.amount = Number(document.getElementById("ho-" + payload.pid)?.value || 0);
       if (type === "lineup" && el.type === "checkbox") payload = { comp: el.dataset.comp || "pokal", same: !el.checked };
       if (type === "rename") { const inp = document.getElementById(payload.what === "staff" ? "rn-staff-" + payload.role : "rn-" + payload.id); payload = { ...payload, name: inp?.value || "" }; if (payload.what === "staff") app.sel.staffRn = ""; }
       if (type === "staff") payload = { role: el.dataset.role, lvl: Number(el.value) };
@@ -321,7 +351,7 @@ function vKader() {
     <div class="small muted">Form: <b>${E.formLabel(p.form)}</b> (${p.form > 0 ? "+" : ""}${Math.round((p.form || 0) * E.FORM_AMP * 100)} % Leistung) · Formschwankung ${p.a.men >= 70 ? "gering" : p.a.men >= 40 ? "mittel" : "hoch"} (Mentale Stärke ${Math.round(p.a.men)})${p.major ? ` · ${p.major} schwere Verletzung(en)` : ""}</div>
     ${ctBox(h, p)}
     <div class="row" style="margin-top:8px;gap:6px"><input id="rn-${esc(p.id)}" maxlength="40" value="${esc(p.name)}" style="width:200px">${btn("Umbenennen", "rename", { what: "player", id: p.id })}</div>
-    <div style="margin-top:6px">${btn("Verkaufen", "sellPlayer", { id: p.id }, "btn sm", `data-confirm="${esc(p.name)} für ${eur(E.valueOf(p) * 0.8)} verkaufen?"`)} ${btn("Entlassen", "releasePlayer", { id: p.id }, "btn sm danger", `data-confirm="${esc(p.name)} entlassen? Abfindung ${eur(p.wage * 0.5 * (Math.max(0, (p.ct?.until ?? S().season) - S().season) + Math.max(0, 34 - S().day) / 34))} (halbes Restgehalt)."`)}</div></div></td></tr>`;
+    <div style="margin-top:6px">${p.loan ? "" : E.transferWindow(S()) ? `${btn("Verkaufen", "sellPlayer", { id: p.id }, "btn sm", `data-confirm="${esc(p.name)} für ${eur(E.valueOf(p) * 0.8)} verkaufen?"`)} ${btn("Verleihen", "loanOut", { id: p.id }, "btn sm", `data-confirm="${esc(p.name)} bis Saisonende verleihen?"`)}` : '<span class="small muted">Verkaufen/Verleihen nur im Transferfenster · </span>'} ${btn("Entlassen", "releasePlayer", { id: p.id }, "btn sm danger", `data-confirm="${esc(p.name)} entlassen? Abfindung ${eur(p.wage * 0.5 * (Math.max(0, (p.ct?.until ?? S().season) - S().season) + Math.max(0, 34 - S().day) / 34))} (halbes Restgehalt)."`)}</div></div></td></tr>`;
   const foreignN = h.players.filter((p) => p.nat && p.nat !== "GER").length;
   return `<h2>Kader</h2><p class="sub">${h.players.length} Spieler (${foreignN} Ausländer) · Gehälter ${eur(wages)}/Saison · Startelf <b>${st(xi.str)}</b> aktuell / ${st(xi.max)} max · Ø Fitness ${Math.round(avgFit)}${inj ? ` · <span class="crit">${inj} verletzt/krank</span>` : ""}${ban ? ` · <span class="warn">${ban} gesperrt</span>` : ""}</p>
   <div class="card" style="margin-bottom:14px"><div class="grid g2" style="gap:10px">
@@ -358,20 +388,30 @@ function formIcon(f = 0) { const [i, col] = f >= 0.5 ? ["⬆", "var(--ok)"] : f 
 function ctPanel(p, mode, h) {
   const yrs = Math.min(5, Math.max(1, Number(app.sel.ctYears) || 2));
   const maxY = p.age >= 33 ? 2 : 5;
-  const offers = E.contractOffers(p, Math.min(yrs, maxY));
+  const clause = !!app.sel.ctClause;
+  const bmode = mode === "buy" ? (app.sel.buyMode || "buy") : null;
+  const canLoan = mode === "buy" && p.from && p.age <= 23;
+  const offers = E.contractOffers(p, bmode === "loan" ? 1 : Math.min(yrs, maxY), clause && bmode !== "loan");
   const until = mode === "buy" ? E.ctUntil(S(), Math.min(yrs, maxY)) : Math.max(p.ct?.until ?? S().season, S().season - 1 + (S().day > 17 ? 1 : 0)) + Math.min(yrs, maxY);
   const bon = (b) => b ? `${eur(b.app)} je Einsatz · ${eur(b.duel)} je gew. Zweikampf · ${eur(b.ast)} je Vorlage · ${eur(b.goal)} je Tor` : "keine Prämien";
-  return `<div style="padding:6px 0"><div class="row" style="gap:6px;margin-bottom:6px"><b class="small">${mode === "buy" ? `Vertrag für ${esc(p.name)} (Ablöse ${eur(p.price)})` : "Vertrag verlängern"}</b>
-    <span class="small muted">Laufzeit:</span><div class="seg">${[1, 2, 3, 4, 5].map((y) => `<button data-sel="ctYears" data-v="${y}" aria-pressed="${Math.min(yrs, maxY) === y}" ${y > maxY ? "disabled" : ""}>${y} J.</button>`).join("")}</div><span class="small muted">→ bis Saison ${until}</span></div>
+  const win = E.transferWindow(S());
+  const modeBar = mode === "buy" ? `<div class="row" style="gap:6px;margin-bottom:6px;flex-wrap:wrap"><div class="seg">${[["buy", `Sofortkauf (${eur(p.price)})`], ["bid", "Gebot"], ...(canLoan ? [["loan", `Leihe (${eur(E.valueOf(p) * 0.08)})`]] : [])].map(([k, n]) => `<button data-sel="buyMode" data-v="${k}" aria-pressed="${bmode === k}">${n}</button>`).join("")}</div>
+    ${bmode === "bid" ? `<input id="bidAmt" type="number" min="0" step="100" value="${Math.round(p.price * 0.85)}" style="width:130px"> <span class="small muted">€ – zu niedrige Gebote lehnt der Verein ab und nennt seine Forderung.</span>` : ""}
+    ${bmode === "loan" ? '<span class="small muted">Bis Saisonende, Gehalt zahlst du voll, danach geht er zurück.</span>' : ""}</div>
+    ${p.from && !win ? '<p class="small warn" style="margin:0 0 6px">Transferfenster geschlossen – Vereinsspieler erst wieder im nächsten Fenster.</p>' : ""}` : "";
+  return `<div style="padding:6px 0">${modeBar}<div class="row" style="gap:6px;margin-bottom:6px"><b class="small">${mode === "buy" ? `Vertrag für ${esc(p.name)}` : "Vertrag verlängern"}</b>
+    <span class="small muted">Laufzeit:</span><div class="seg">${[1, 2, 3, 4, 5].map((y) => `<button data-sel="ctYears" data-v="${y}" aria-pressed="${Math.min(yrs, maxY) === y}" ${y > maxY ? "disabled" : ""}>${y} J.</button>`).join("")}</div><span class="small muted">→ bis Saison ${bmode === "loan" ? S().season : until}</span>
+    ${bmode !== "loan" ? `<label class="small" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-sel="ctClause" data-v="${clause ? "" : "1"}" ${clause ? "checked" : ""}> Ausstiegsklausel (${eur(E.valueOf(p) * 1.6)}) – 8 % weniger Gehalt</label>` : ""}</div>
     <div class="scroll"><table><thead><tr><th>Angebot</th><th class="r">Fix / Saison</th><th>Leistungsprämien</th><th class="r">Erwartet / Saison</th><th></th></tr></thead><tbody>
     ${offers.map((o) => `<tr><td><b>${E.CT_KINDS[o.kind]}</b></td><td class="r">${eur(o.base)}</td><td class="small" style="white-space:normal">${bon(o.kind === "fest" ? null : o.bonus)}</td><td class="r">${eur(o.expected)}</td>
-      <td>${mode === "buy" ? btn("Unterschreiben", "buyPlayer", { id: p.id, years: Math.min(yrs, maxY), kind: o.kind }, "btn sm pri", p.price > h.cash ? "disabled" : "") : btn("Verlängern", "contract", { id: p.id, years: Math.min(yrs, maxY), kind: o.kind }, "btn sm pri")}</td></tr>`).join("")}</tbody></table></div>
+      <td>${mode === "buy" ? btn(bmode === "bid" ? "Gebot abgeben" : "Unterschreiben", "buyPlayer", { id: p.id, years: Math.min(yrs, maxY), kind: o.kind, mode: bmode, clause }, "btn sm pri", (p.from && !win) ? "disabled" : "") : btn("Verlängern", "contract", { id: p.id, years: Math.min(yrs, maxY), kind: o.kind, clause }, "btn sm pri")}</td></tr>`).join("")}</tbody></table></div>
     <p class="small muted" style="margin:4px 0 0">Fest = volles Gehalt, egal wie er spielt. Leistung = niedriges Fixum, dafür Prämien für Einsätze, gewonnene Zweikämpfe, Vorlagen und Tore (erwartet bei ca. 26 Einsätzen). ${p.age >= 33 ? "Mit über 32 Jahren unterschreibt er höchstens 2 Jahre." : ""}</p></div>`;
 }
 function ctBox(h, p) {
   if (!p.ct) return "";
   const b = p.ct.bonus;
-  return `<div class="small" style="margin-top:6px"><b>Vertrag:</b> bis Saison ${p.ct.until} · ${E.CT_KINDS[p.ct.kind]} · ${eur(p.ct.base)} fix/Saison${b ? ` · Prämien: ${eur(b.app)}/Einsatz, ${eur(b.duel)}/Zweikampf, ${eur(b.ast)}/Vorlage, ${eur(b.goal)}/Tor` : ""}${p.retiring ? ' · <span class="warn">beendet zum Saisonende seine Karriere</span>' : ""}</div>
+  if (p.loan) return `<div class="small" style="margin-top:6px"><b>Leihspieler</b> von ${esc(team(p.loan.from)?.name || "?")} bis Saisonende · ${eur(p.ct.base)} Gehalt/Saison</div>`;
+  return `<div class="small" style="margin-top:6px"><b>Vertrag:</b> bis Saison ${p.ct.until} · ${E.CT_KINDS[p.ct.kind]} · ${eur(p.ct.base)} fix/Saison${p.ct.clause ? ` · Ausstiegsklausel ${eur(p.ct.clause)}` : ""}${b ? ` · Prämien: ${eur(b.app)}/Einsatz, ${eur(b.duel)}/Zweikampf, ${eur(b.ast)}/Vorlage, ${eur(b.goal)}/Tor` : ""}${p.retiring ? ' · <span class="warn">beendet zum Saisonende seine Karriere</span>' : ""}</div>
     ${p.retiring ? "" : app.sel.ctOpen === p.id ? ctPanel(p, "extend", h) : `<button class="btn sm" style="margin-top:4px" data-sel="ctOpen" data-v="${esc(p.id)}">Vertrag verlängern …</button>`}`;
 }
 
@@ -419,14 +459,28 @@ function vTransfer() {
   const c = myClub(), h = c.h;
   const market = E.marketFor(S(), c, S().lastSeed);
   const buyP = app.sel.buy ? market.find((x) => x.id === app.sel.buy) : null;
-  return `<h2>Transfers</h2><p class="sub">Der Markt wechselt täglich nach dem Spieltag. Käufe gelten ab dem nächsten Spieltag.</p>
+  const win = E.transferWindow(S());
+  const offIn = (h.offersIn || []).map((o) => `<tr><td>${esc(o.name)}</td><td class="small">${esc(team(o.from)?.name || "?")}</td><td class="r">${eur(o.amount)}</td><td class="r small muted">${eur(E.valueOf(h.players.find((x) => x.id === o.pid) || {}))}</td><td>${btn("Annehmen", "offerAnswer", { id: o.id, accept: true }, "btn sm pri", `data-confirm="${esc(o.name)} für ${eur(o.amount)} abgeben?"`)} ${btn("Ablehnen", "offerAnswer", { id: o.id, accept: false }, "btn sm")}</td></tr>`).join("");
+  const hIn = (S().hoffers || []).filter((o) => o.to === c.id).map((o) => `<tr><td>${esc(o.name)}</td><td class="small">${esc(S().clubs.get(o.from)?.name || "?")} <span class="pill">Mitspieler</span></td><td class="r">${eur(o.amount)}</td><td></td><td>${btn("Annehmen", "humanAnswer", { id: o.id, accept: true }, "btn sm pri", `data-confirm="${esc(o.name)} für ${eur(o.amount)} abgeben?"`)} ${btn("Ablehnen", "humanAnswer", { id: o.id, accept: false }, "btn sm")}</td></tr>`).join("");
+  const hOut = (S().hoffers || []).filter((o) => o.from === c.id).map((o) => `<div class="row" style="justify-content:space-between;padding:4px 0;border-top:1px solid var(--line)"><span>${esc(o.name)} · ${esc(S().clubs.get(o.to)?.name || "")} · <b>${eur(o.amount)}</b></span>${btn("Zurückziehen", "humanAnswer", { id: o.id, accept: false }, "btn sm")}</div>`).join("");
+  const loaned = (h.loaned || []).map((l) => `<div class="small" style="padding:3px 0">${esc(l.p.name)} (${l.p.pos}, ${st(l.p.max)}) bei ${esc(team(l.to)?.name || "?")} · dort zahlt man ${Math.round(l.share * 100)} % des Gehalts</div>`).join("");
+  const others = [...S().clubs.values()].filter((x) => x.h && x !== c && x.owner);
+  const oc = others.find((x) => x.id === app.sel.hClub) || null;
+  const hSquad = oc ? `<div class="scroll" style="margin-top:8px"><table><thead><tr><th>Pos</th><th>Name</th><th class="r">Alter</th><th class="r">Stärke</th><th class="r">Marktwert</th><th>Vertrag</th><th></th></tr></thead><tbody>${oc.h.players.filter((p) => !p.loan).sort((a, b) => b.max - a.max).map((p) => `<tr><td>${p.pos}</td><td>${esc(p.name)}${natTag(p)}</td><td class="r">${p.age}</td><td class="r">${st(p.max)}</td><td class="r">${eur(E.valueOf(p))}</td><td class="small">${p.ct ? "bis S" + p.ct.until : ""}${p.ct?.clause ? " · Klausel " + eur(p.ct.clause) : ""}</td>
+    <td style="white-space:nowrap"><input id="ho-${esc(p.id)}" type="number" min="0" step="1000" value="${Math.round(E.valueOf(p))}" style="width:110px"> ${btn("Angebot", "humanOffer", { pid: p.id }, "btn sm pri", win ? "" : "disabled")}</td></tr>`).join("")}</tbody></table></div>` : "";
+  return `<h2>Transfers</h2><p class="sub">${win ? `<span class="pill ok">Transferfenster offen</span> ${win.name}fenster bis Spieltag ${win.until}.` : `<span class="pill warn">Transferfenster geschlossen</span> Nächstes Fenster ab Spieltag ${E.nextWindow(S())}. Vereinslose Spieler gehen immer.`} Fenster: Spieltag 1–7 (Sommer) und 17–20 (Winter).</p>
+  ${offIn || hIn ? `<div class="card" style="margin-bottom:14px"><h3>Angebote für deine Spieler</h3><div class="scroll"><table><thead><tr><th>Spieler</th><th>Von</th><th class="r">Angebot</th><th class="r">Marktwert</th><th></th></tr></thead><tbody>${hIn}${offIn}</tbody></table></div><p class="small muted">Angebote gelten drei Tage. Ablehnen kann die Laune des Spielers drücken, wenn das Angebot gut war.</p></div>` : ""}
+  ${hOut || loaned ? `<div class="grid g2" style="margin-bottom:14px">${hOut ? `<div class="card"><h3>Deine Angebote an Mitspieler</h3>${hOut}</div>` : ""}${loaned ? `<div class="card"><h3>Verliehen</h3>${loaned}</div>` : ""}</div>` : ""}
   ${buyP ? `<div class="card" style="margin-bottom:14px;border-color:var(--accent)"><div class="row" style="justify-content:space-between"><h3>${esc(buyP.name)} · ${buyP.pos}, ${buyP.age} J., Stärke ${st(buyP.max)}</h3><button class="btn sm" data-sel="buy" data-v="">Schließen</button></div>${ctPanel(buyP, "buy", h)}</div>` : ""}
   <div class="grid g2">
   <div class="card"><h3>Scouting-Bericht</h3>${scoutCard(h, market)}</div>
   <div class="card"><h3>Transfermarkt</h3><div class="scroll"><table><thead><tr><th>Pos</th><th>Name</th><th class="r">Alter</th><th class="r">Stärke</th><th>Verein</th><th class="r">Ablöse</th><th></th></tr></thead><tbody>
   ${market.map((p) => `<tr><td>${p.pos}</td><td>${esc(p.name)}${natTag(p)}</td><td class="r">${p.age}</td><td class="r"><b>${st(p.max)}</b><div class="small muted">Pot. ${potTxt(h, p)}</div><div class="small muted">${["spd", "tec", "zwk", "abs"].map((k) => E.ATTR_NAMES[k].slice(0, 3) + " " + Math.round(p.a[k])).join(" · ")}</div></td><td class="small">${p.from ? esc(team(p.from).name) : "vereinslos"}</td><td class="r">${eur(p.price)}</td>
     <td><button class="btn sm pri" data-sel="buy" data-v="${esc(p.id)}" ${p.price > h.cash ? "disabled" : ""}>Kaufen …</button></td></tr>`).join("")}
-  </tbody></table></div><p class="small muted">Beim Kauf wählst du Laufzeit und eines von drei Vertragsangeboten (fest, ausgewogen, leistungsabhängig). Kader max. 30 Spieler. Mehr Scouts = mehr Angebote und genauere Potenzialschätzung.</p></div></div>`;
+  </tbody></table></div><p class="small muted">Beim Kauf wählst du Sofortkauf, Gebot oder (bei Talenten bis 23) Leihe, dazu Laufzeit und eines von drei Vertragsangeboten (fest, ausgewogen, leistungsabhängig). Kader max. 30 Spieler. Mehr Scouts = mehr Angebote und genauere Potenzialschätzung.</p></div></div>
+  <div class="card" style="margin-top:14px"><div class="row" style="justify-content:space-between"><h3>Spieler von Mitspielern</h3>${others.length ? `<select data-sel="hClub"><option value="">Verein wählen …</option>${others.map((x) => `<option value="${x.id}" ${oc === x ? "selected" : ""}>${esc(x.name)} (${esc(userName(x.owner))})</option>`).join("")}</select>` : ""}</div>
+    ${others.length ? (oc ? hSquad : '<p class="small muted">Wähle einen Verein, um ein Angebot abzugeben.</p>') : '<p class="small muted">Noch keine anderen Mitspieler mit Verein.</p>'}
+    <p class="small muted">Transfers unter Mitspielern nur im Transferfenster. Der andere Manager entscheidet innerhalb von drei Tagen; der Spieler behält seinen Vertrag.</p></div>`;
 }
 
 
