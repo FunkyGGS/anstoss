@@ -66,3 +66,9 @@ Link und Einladungscode schicken. Jeder legt mit E-Mail und Passwort ein Konto a
 - **Chat:** eigene Nachrichten bearbeiten (Hinweis „bearbeitet“) und löschen – dafür einmalig `supabase_chat_edit.sql` ausführen.
 - **Namen ändern:** Spieler im eigenen Kader (Kader → Spieler antippen) und Personal (✎ im Reiter Personal) lassen sich umbenennen.
 - **Aufstellungen (Liga / Pokal):** Formation, Spielweise, Intensität, Aggressivität, Rotation und feste Spieler je Position – im Pokal optional mit eigener Aufstellung.
+- **Form:** Tägliche Formschwankung (±8 % Leistung), beeinflusst durch Ergebnisse, Tore, Vorlagen und Platzverweise – Spieler mit hoher mentaler Stärke schwanken weniger.
+- **Stärkeverlust:** Ab 30 Jahren sinkt die Maximalstärke schrittweise; schwere Verletzungen (ab 4 Wochen) hinterlassen bleibende Einbußen – je besser Arzt, Physio und Reha-Trainer, desto geringer.
+- **Verträge:** Laufzeit 1–5 Jahre bis Saisonende, drei Angebote je Laufzeit (Festgehalt, Ausgewogen, Leistung mit Prämien für Einsätze, gewonnene Zweikämpfe, Vorlagen und Tore). Auslaufende Verträge → Spieler gehen ablösefrei; Verlängerung im Kader.
+- **Karriereende:** Wahrscheinlichkeit je Alter aus einer Normalverteilung (Ø ~33 Jahre, Spitzenspieler und Torhüter später, schwere Verletzungen früher); Ankündigung am 25. Spieltag.
+- **Europapokal:** Champions League, Europa League und Conference League (je 36 Teams, Ligaphase + K.-o.-Runden mit Hin- und Rückspiel, Finale). Deutsche Teilnehmer aus Bundesliga und DFB-Pokal, ausländische Teams jede Saison nach UEFA-Verbandskoeffizient aus allen Klubs der letzten fünf Europapokal-Jahre (Daten: kassiesa.net, Stand 11/2026, `euro.js`).
+

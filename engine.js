@@ -2,7 +2,8 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221054";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221213";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221213";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -44,6 +45,36 @@ export const LV = {
   11: { name: "3. Kreisklasse", top: 6.5, bot: 3, tv: 0, sponsor: 1500, att: 25, price: 0, cap: 300, fixed: 1200, match: 25, prize: 80, value: 6e3, fac: 0 },
 };
 export const levelMid = (l) => (LV[l].top + LV[l].bot) / 2;
+// ---------------------------------------------------------------- Verträge
+export const CT_KINDS = { fest: "Festgehalt", mix: "Ausgewogen", flex: "Leistung" };
+const CT_SPLIT = { fest: [1, 0], mix: [0.7, 0.38], flex: [0.4, 0.75] };   // Anteil fix, erwarteter Prämienanteil (bezogen auf Forderung)
+const EXP_APPS = 26;
+function expectedEvents(p) {
+  const pos = p.pos;
+  return { apps: EXP_APPS, zw: EXP_APPS * DUEL_BASE[pos] * (p.a.zwk / 60), as: EXP_APPS * 0.09 * (ASSIST_W[pos] ?? 1) * ((p.a.pas + p.a.vis) / 120), g: EXP_APPS * 0.07 * (SCORE_W[pos] ?? 1) * ((p.a.abs + 20) / 80) };
+}
+export function contractDemand(p, years) {
+  const base = wageOf(p.max) * (1 + Math.max(0, (p.pot || p.max) - p.max) / 60);
+  const yf = p.age >= 31 ? 1 + 0.05 * (years - 1) : p.age <= 23 ? 1 - 0.02 * (years - 1) : 1 + 0.02 * (years - 1);
+  return base * yf;
+}
+export function contractOffers(p, years) {
+  const D = contractDemand(p, years), e = expectedEvents(p);
+  return Object.keys(CT_KINDS).map((kind) => {
+    const [fix, bon] = CT_SPLIT[kind];
+    const pool = D * bon;
+    const share = p.pos === "TW" ? { app: 0.85, duel: 0.15, ast: 0, goal: 0 } : { app: 0.4, duel: 0.2, ast: 0.15, goal: 0.25 };
+    const bonus = { app: eur(pool * share.app / e.apps), duel: eur(pool * share.duel / Math.max(1, e.zw)), ast: eur(pool * share.ast / Math.max(0.5, e.as)), goal: eur(pool * share.goal / Math.max(0.5, e.g)) };
+    return { kind, years, base: eur(D * fix), bonus, expected: eur(D * fix + pool) };
+  });
+}
+export function ctUntil(S, years) { return S.season + years - 1 + (S.day > 17 ? 1 : 0); }
+function setContract(p, o, until) { p.ct = { kind: o.kind, until, base: o.base, bonus: o.kind === "fest" ? null : o.bonus }; p.wage = o.base; }
+function ensureContract(S, p) {
+  if (p.ct) return;
+  const o = contractOffers(p, 1).find((x) => x.kind === "fest");
+  setContract(p, { ...o, base: p.wage || o.base }, S.season + (hash32("ct:" + p.id) % 3));
+}
 const DOWN = { 1: 2, 2: 2, 3: 4, 4: 3, 5: 2, 6: 2, 7: 2, 8: 2, 9: 2, 10: 2, 11: 1 };
 
 // Gehalt pro Saison (= Spieljahr) abhängig von der Stärke
@@ -189,6 +220,8 @@ export function createState(world, seasonSeed1) {
   for (const t of S.teams.values()) rank.set(t.id, { pos: t.initPos, ppg: 0 });
   const moves = normalize(S, rank, false);
   S.initialMoves = moves;
+  S.fteams = new Map(UEFA_CLUBS.map((c) => [c.id, { id: c.id, name: c.name, cc: c.cc, base: c.str, str: c.str, level: 1, rank: 1, clubId: null, foreign: true, status: "foreign" }]));
+  S.euro = { comps: {}, next: null, hist: [] };
   startSeason(S);
   return S;
 }
@@ -417,7 +450,187 @@ export function startSeason(S) {
   }
   for (const t of S.teams.values()) { t.fatigue = 0; t.form = 0; }
   setupCups(S);
+  if (S.fteams) setupEuro(S);
   for (const c of S.clubs.values()) if (c.h) seasonStartHuman(S, c);
+}
+
+
+// ---------------------------------------------------------------- Europapokal (CL, EL, ECL)
+export const tm = (S, id) => S.teams.get(id) || S.fteams?.get(id);
+export const UEFA_NAMES = Object.fromEntries(Object.entries(UEFA_COUNTRIES).map(([k, v]) => [k, v[0]]));
+function gauss(rng) { return (rng() + rng() + rng() - 1.5) * 2; }
+function setupEuro(S) {
+  const rng = seasonRng(S, "euro");
+  for (const t of S.fteams.values()) t.str = r2(clamp(t.base + gauss(rng) * 1.5, 30, 95));
+  let ger = S.euro.next;
+  if (!ger) {
+    const byName = (n) => [...S.teams.values()].find((t) => t.name === n && t.status === "active" && t.level === 1 && t.rank === 1)?.id;
+    ger = Object.fromEntries(Object.entries(GER_SEASON1).map(([k, v]) => [k, v.map(byName).filter(Boolean)]));
+  }
+  const order = {};
+  for (const t of S.fteams.values()) (order[t.cc] = order[t.cc] || []).push({ id: t.id, k: t.str + gauss(rng) * 1.5 });
+  for (const cc in order) order[cc] = order[cc].sort((a, b) => b.k - a.k || (a.id < b.id ? -1 : 1)).map((x) => x.id);
+  const used = new Set();
+  const take = (cc) => { const id = (order[cc] || []).find((x) => !used.has(x)); if (id) used.add(id); return id; };
+  const ranked = Object.entries(UEFA_COUNTRIES).filter(([cc]) => cc !== "Ger" && order[cc]).sort((a, b) => b[1][1] - a[1][1]).map(([cc]) => cc);
+  const pickCountry = (cands) => {
+    const live = cands.filter((cc) => (order[cc] || []).some((x) => !used.has(x)));
+    if (!live.length) return null;
+    const w = live.map((cc) => UEFA_COUNTRIES[cc][1]); let x = rng() * w.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < live.length; i++) { x -= w[i]; if (x <= 0) return live[i]; }
+    return live[live.length - 1];
+  };
+  S.euro.comps = {};
+  for (const comp of UEFA_COMPS) {
+    const Q = UEFA_QUOTA[comp.id];
+    const list = (ger[comp.id] || []).slice();
+    for (const id of list) used.add(id);
+    for (const [cc, n] of Object.entries(Q.quota)) for (let i = 0; i < n; i++) { const id = take(cc); if (id) list.push(id); }
+    for (let i = 0; i < Q.eps; i++) { const cc = pickCountry(ranked.slice(0, 5)); const id = cc && take(cc); if (id) list.push(id); }
+    while (list.length < 36) {
+      const cc = pickCountry(ranked.slice(Q.freeFrom - 1)) || pickCountry(ranked);
+      if (!cc) break;
+      list.push(take(cc));
+    }
+    S.euro.comps[comp.id] = makeEuroComp(S, comp, list.slice(0, 36), seasonRng(S, "euroDraw", comp.id));
+  }
+}
+function makeEuroComp(S, comp, teams, rng) {
+  const rounds = roundRobin(teams, rng).slice(0, comp.lpDays.length);
+  return {
+    id: comp.id, name: comp.name, short: comp.short, teams: teams.slice(),
+    lp: rounds.map((pairs, i) => ({ day: comp.lpDays[i], matches: pairs.map(([h, a]) => ({ h, a, gh: null, ga: null })) })),
+    table: new Map(teams.map((id) => [id, { id, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, pts: 0 }])),
+    ko: comp.ko.map((days, i) => ({ days, name: ["K.-o.-Playoffs", "Achtelfinale", "Viertelfinale", "Halbfinale", "Finale"][i], ties: [] })),
+    winner: null, runnerUp: null,
+  };
+}
+export function euroTable(C) { return [...C.table.values()].sort((a, b) => b.pts - a.pts || (b.gf - b.ga) - (a.gf - a.ga) || b.gf - a.gf || (a.id < b.id ? -1 : 1)); }
+function euroPrize(S, tid, amount, what) {
+  const t = tm(S, tid); const c = t?.clubId ? S.clubs.get(t.clubId) : null;
+  if (!c?.h || t.rank !== 1 || !amount) return;
+  ledger(c.h, "in", "UEFA-Prämien", amount);
+  if (what) userNews(S, c.owner, what);
+}
+function euroFinance(S, m, r) {
+  for (const [tid, oid, home] of [[m.h, m.a, true], [m.a, m.h, false]]) {
+    const t = tm(S, tid); const c = t?.clubId ? S.clubs.get(t.clubId) : null;
+    if (!c?.h || t.rank !== 1) continue;
+    const h = c.h, L = Math.min(t.level, 11);
+    const won = home ? r.gh > r.ga : r.ga > r.gh;
+    if (home && !m.neutral) {
+      const att = Math.round(Math.min(LV[L].cap * (1 + 0.15 * h.fac.umfeld), attendance(S, c, t, tm(S, oid), true) * 1.4));
+      ledger(h, "in", "Zuschauer", att * LV[L].price * h.ticket * 1.6);
+      ledger(h, "in", "Catering & Fanartikel", att * (1 + 0.4 * h.fac.umfeld) * 7);
+      ledger(h, "out", "Spielbetrieb", LV[L].match * 1.2);
+      h.lastAtt = att;
+    } else ledger(h, "out", "Reisekosten Europa", LV[L].match * 0.9);
+    h.popularity = clamp(h.popularity + (won ? 0.008 : -0.002), 0.5, 2.5);
+  }
+}
+function euroMatch(S, C, h, a, rr, daySeed, neutral) {
+  const r = playMatch(S, h, a, rr, neutral, "europa");
+  const m = { h, a, gh: r.gh, ga: r.ga, st: r.st, neutral };
+  recordLeagueGoals(S, { id: C.id }, r);
+  if (r.H.human) afterMatchHuman(S, r.H, r.A, r, 0, C.name, false, daySeed);
+  if (r.A.human) afterMatchHuman(S, r.A, r.H, r, 1, C.name, false, daySeed);
+  euroFinance(S, m, r);
+  return { m, r };
+}
+function euroDay(S, d, daySeed) {
+  for (const comp of UEFA_COMPS) {
+    const C = S.euro.comps[comp.id]; if (!C) continue;
+    const P = comp.prize;
+    // Ligaphase
+    const li = C.lp.findIndex((x) => x.day === d);
+    if (li >= 0) {
+      if (li === 0) for (const id of C.teams) euroPrize(S, id, P.start, `${C.name}: Startprämie ${fmt(P.start)} überwiesen.`);
+      for (const mm of C.lp[li].matches) {
+        const { m } = euroMatch(S, C, mm.h, mm.a, rngFrom(daySeed, C.id, mm.h, mm.a), daySeed, false);
+        Object.assign(mm, m);
+        const th = C.table.get(mm.h), ta = C.table.get(mm.a);
+        th.p++; ta.p++; th.gf += mm.gh; th.ga += mm.ga; ta.gf += mm.ga; ta.ga += mm.gh;
+        if (mm.gh > mm.ga) { th.w++; th.pts += 3; ta.l++; euroPrize(S, mm.h, P.win); }
+        else if (mm.gh < mm.ga) { ta.w++; ta.pts += 3; th.l++; euroPrize(S, mm.a, P.win); }
+        else { th.d++; ta.d++; th.pts++; ta.pts++; euroPrize(S, mm.h, P.draw); euroPrize(S, mm.a, P.draw); }
+      }
+      if (li === C.lp.length - 1) {
+        const tab = euroTable(C);
+        const ties = [];
+        for (let i = 8; i < 16; i++) ties.push({ a: tab[i].id, b: tab[31 - i].id, legs: [], winner: null });
+        C.ko[0].ties = ties;
+        C.direct = tab.slice(0, 8).map((x) => x.id);
+        for (const x of tab.slice(24)) euroPrize(S, x.id, 0, `${C.name}: Aus nach der Ligaphase.`);
+        for (const t of ties) { euroPrize(S, t.a, P.ko[0]); euroPrize(S, t.b, P.ko[0]); }
+        news(S, `${C.name}: Ligaphase beendet – ${tm(S, tab[0].id).name} ist Erster.`);
+      }
+    }
+    // K.-o.-Runden
+    C.ko.forEach((rd, ri) => {
+      const leg = rd.days.indexOf(d);
+      if (leg < 0 || !rd.ties.length) return;
+      const final = rd.days.length === 1;
+      for (const tie of rd.ties) {
+        const [h, a] = final ? [tie.a, tie.b] : leg === 0 ? [tie.b, tie.a] : [tie.a, tie.b];
+        const rr = rngFrom(daySeed, C.id, "ko", ri, h, a);
+        const { m, r } = euroMatch(S, C, h, a, rr, daySeed, final);
+        tie.legs[leg] = m;
+        if (final || leg === 1) {
+          const goals = (id) => tie.legs.reduce((s2, x) => s2 + (x.h === id ? x.gh : x.ga), 0);
+          let ga = goals(tie.a), gb = goals(tie.b);
+          if (ga === gb) {
+            m.et = true;
+            const p1 = Math.min(0.8, r.lh / 3 / 4), p2 = Math.min(0.8, r.la / 3 / 4);
+            for (let i = 0; i < 4; i++) { if (rr() < p1) m.gh++; if (rr() < p2) m.ga++; }
+            ga = goals(tie.a); gb = goals(tie.b);
+            if (ga === gb) { const hw = rr() < 0.5 + clamp(r.rel / 400, -0.15, 0.15); m.pen = hw ? "h" : "a"; }
+          }
+          tie.winner = m.pen ? (m.pen === "h" ? m.h : m.a) : ga > gb ? tie.a : tie.b;
+        }
+      }
+      if (!final && leg === 0) return;
+      const winners = rd.ties.map((t) => t.winner);
+      if (final) {
+        const t = rd.ties[0];
+        C.winner = t.winner; C.runnerUp = t.winner === t.a ? t.b : t.a;
+        euroPrize(S, C.winner, P.title, `🏆 ${C.name} gewonnen! Siegprämie ${fmt(P.title)}.`);
+        news(S, `${C.name}: ${tm(S, C.winner).name} gewinnt das Finale gegen ${tm(S, C.runnerUp).name}!`);
+        return;
+      }
+      const rng = rngFrom(daySeed, "euroDraw", C.id, ri + 1);
+      const next = C.ko[ri + 1];
+      let pool = ri === 0 ? C.direct.slice() : winners.slice();
+      let others = ri === 0 ? winners.slice() : null;
+      for (const arr of [pool, others]) if (arr) for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+      next.ties = [];
+      if (others) for (let i = 0; i < pool.length; i++) next.ties.push({ a: pool[i], b: others[i], legs: [], winner: null });
+      else for (let i = 0; i + 1 < pool.length; i += 2) next.ties.push({ a: pool[i], b: pool[i + 1], legs: [], winner: null });
+      for (const t of next.ties) { euroPrize(S, t.a, P.ko[ri + 1], `${C.name}: ${next.name} erreicht!`); euroPrize(S, t.b, P.ko[ri + 1], `${C.name}: ${next.name} erreicht!`); }
+    });
+  }
+}
+function euroSeasonEnd(S) {
+  const rec = { season: S.season };
+  for (const comp of UEFA_COMPS) {
+    const C = S.euro.comps[comp.id]; if (!C?.winner) continue;
+    const w = tm(S, C.winner), ru = tm(S, C.runnerUp);
+    rec[comp.id] = { winner: w.name, cc: w.cc || "Ger", runnerUp: ru?.name, ruCc: ru?.cc || "Ger" };
+    if (w.clubId) addTrophy(S, w.clubId, { season: S.season, kind: "europa", level: 0, title: C.name, team: w.name });
+  }
+  S.euro.hist.push(rec);
+  // Deutsche Teilnehmer der nächsten Saison: Plätze 1–4 CL, 5 + Pokalsieger EL, 6 (bzw. nächster) ECL
+  const tab = (S.lastTables.get("bl") || []).map((r) => r.id).filter((id) => S.teams.get(id)?.rank === 1);
+  const cl = tab.slice(0, 4), used = new Set(cl);
+  const nextFree = () => { const id = tab.find((x) => !used.has(x)); if (id) used.add(id); return id; };
+  const el = [nextFree()];
+  const cw = S.cupWinners.dfb?.winner;
+  if (cw && !used.has(cw) && S.teams.get(cw)?.rank === 1 && S.teams.get(cw)?.status === "active") { used.add(cw); el.push(cw); } else el.push(nextFree());
+  const ecl = [nextFree()];
+  S.euro.next = { cl, el: el.filter(Boolean), ecl: ecl.filter(Boolean) };
+  for (const [k, ids] of Object.entries(S.euro.next)) for (const id of ids) {
+    const t = S.teams.get(id), c = S.clubs.get(t.clubId);
+    if (c?.owner) userNews(S, c.owner, `Europa ruft: ${t.name} spielt nächste Saison in der ${UEFA_COMPS.find((x) => x.id === k).name}!`);
+  }
 }
 
 // ---------------------------------------------------------------- Pokale
@@ -520,6 +733,9 @@ export const POS_WEIGHTS = {
 };
 const POS_GROUP = { TW: "T", IV: "D", AV: "D", DM: "M", ZM: "M", AM: "M", OM: "O", AS: "O", ST: "O", MS: "O" };
 const SCORE_W = { TW: 0, IV: 0.25, AV: 0.2, DM: 0.35, ZM: 0.7, AM: 1, OM: 1.6, AS: 2.4, ST: 3.2, MS: 4.2 };
+const ASSIST_W = { TW: 0.05, IV: 0.25, AV: 0.9, DM: 0.6, ZM: 1.1, AM: 1.4, OM: 1.8, AS: 1.6, ST: 1.3, MS: 0.8 };
+const DUEL_BASE = { TW: 0.5, IV: 7, AV: 6, DM: 8, ZM: 6, AM: 5, OM: 4, AS: 5, ST: 4, MS: 5 };
+const AGG_DUEL = [0.8, 0.9, 1, 1.08, 1.15];
 const CARD_W = { TW: 0.3, IV: 1.5, AV: 1.2, DM: 1.6, ZM: 1, AM: 0.8, OM: 0.7, AS: 0.6, ST: 0.7, MS: 0.8 };
 export function posStrength(p, pos) {
   const w = POS_WEIGHTS[pos]; let s = 0;
@@ -530,7 +746,11 @@ export function posStrength(p, pos) {
   }
   return s;
 }
-export const curStrength = (p, pos) => posStrength(p, pos || p.pos) * fitFactor(p.fit ?? 100);
+export const FORM_AMP = 0.08;
+export const curStrength = (p, pos) => posStrength(p, pos || p.pos) * fitFactor(p.fit ?? 100) * (1 + FORM_AMP * (p.form || 0));
+// Formschwankung: je höher die mentale Stärke, desto ruhiger die Form
+export const formSwing = (p) => 0.55 - 0.42 * ((p.a?.men ?? 50) / 100);
+export function formLabel(f = 0) { return f >= 0.5 ? "Topform" : f >= 0.15 ? "gut" : f > -0.15 ? "normal" : f > -0.5 ? "schwach" : "Formtief"; }
 function makeAttrs(rng, pos, target) {
   const w = POS_WEIGHTS[pos]; const mx = Math.max(...Object.values(w));
   const a = {};
@@ -540,7 +760,7 @@ function makeAttrs(rng, pos, target) {
   for (const k of ATTRS) a[k] = r2(clamp(a[k] * f, 0.5, 99.99));
   return a;
 }
-const newStats = () => ({ apps: 0, g: 0, y: 0, r: 0 });
+const newStats = () => ({ apps: 0, g: 0, y: 0, r: 0, as: 0, zw: 0 });
 function genPlayer(rng, pos, str, age, idPrefix, i) {
   str = clamp(str, 0.5, 99.99);
   const p = { id: idPrefix + ":" + i, name: nameFrom(rng), pos, age, a: makeAttrs(rng, pos, str), fit: 100, inj: null, ban: 0, s: newStats(), c: newStats() };
@@ -571,10 +791,12 @@ export function aiSquad(S, t) {
 // Startelf: verfügbare Spieler (nicht verletzt/gesperrt) nach aktueller Stärke auf die Positionen der Formation
 export const COMPS = { liga: "Liga", pokal: "Pokal" };
 // Einstellungen je Wettbewerb: Liga = Grundeinstellung, Pokal optional abweichend
+export const LU_KEY = { pokal: "cup", europa: "euroLu" };
 export function setupOf(h, comp = "liga") {
   const base = { formation: h.formation, tactic: h.tactic, intensity: h.intensity || 3, aggression: h.aggression || 3, minFit: h.minFit ?? 60, manual: h.manual || [] };
-  if (comp !== "pokal" || !h.cup || h.cup.same !== false) return { ...base, same: comp === "pokal" };
-  return { formation: h.cup.formation || base.formation, tactic: h.cup.tactic || base.tactic, intensity: h.cup.intensity || base.intensity, aggression: h.cup.aggression || base.aggression, minFit: h.cup.minFit ?? base.minFit, manual: h.cup.manual || [], same: false };
+  const key = LU_KEY[comp], o = key ? h[key] : null;
+  if (!o || o.same !== false) return { ...base, same: !!key };
+  return { formation: o.formation || base.formation, tactic: o.tactic || base.tactic, intensity: o.intensity || base.intensity, aggression: o.aggression || base.aggression, minFit: o.minFit ?? base.minFit, manual: o.manual || [], same: false };
 }
 export function humanXI(S, c, comp = "liga") {
   const h = c.h, U = setupOf(h, comp);
@@ -621,7 +843,7 @@ export function teamStrength(S, t) {
   return r2(t.str * AI_FIT);
 }
 function sideInfo(S, tid, comp = "liga") {
-  const t = S.teams.get(tid); const c = S.clubs.get(t.clubId);
+  const t = tm(S, tid); const c = t.clubId ? S.clubs.get(t.clubId) : null;
   if (t.rank === 1 && c?.h) {
     const X = humanXI(S, c, comp), U = X.setup;
     return { t, c, human: true, X, comp, str: X.str, tac: TACTICS[U.tactic] || TACTICS.normal, tacName: U.tactic, agg: U.aggression, players: X.xi.filter((x) => x.p).map((x) => ({ p: x.p, slot: x.slot })) };
@@ -680,8 +902,11 @@ function playMatch(S, h, a, rng, neutral = false, comp = "liga") {
   // Torschützen
   for (const [k, n] of [[0, gh], [1, ga]]) {
     for (let i = 0; i < n; i++) {
-      const who = pickWeighted(rng, sides[k].players, (x) => x.w ?? SCORE_W[x.slot] * Math.pow((x.p.a.abs + x.p.a.kop * 0.3) / 100, 2));
-      st.g.push([1 + Math.floor(rng() * 90), k, who?.p.name || "Eigentor", who?.p.id || null]);
+      const pl = sides[k].players;
+      const who = pickWeighted(rng, pl, (x) => x.w ?? SCORE_W[x.slot] * Math.pow((x.p.a.abs + x.p.a.kop * 0.3) / 100, 2));
+      let ast = null;
+      if (who && rng() < 0.72) ast = pickWeighted(rng, pl.filter((x) => x !== who), (x) => (ASSIST_W[x.slot] ?? 1) * Math.pow((x.p.a.pas + x.p.a.vis) / 200, 2));
+      st.g.push([1 + Math.floor(rng() * 90), k, who?.p.name || "Eigentor", who?.p.id || null, ast?.p.name || null, ast?.p.id || null]);
     }
   }
   st.g.sort((x, y) => x[0] - y[0]);
@@ -707,6 +932,18 @@ function injure(S, c, p, rng, list, sevBoost, ill) {
   const it = pickWeighted(rng, list, (x) => x.w * (x.sev ? 1 + sevBoost * x.sev : 1));
   const days = Math.max(1, Math.round((it.min + Math.floor(rng() * (it.max - it.min + 1))) * (ill ? 1 : REHA_F[sl(c.h, "reha")])));
   p.inj = { n: it.n, days, back: it.back, ill: !!ill }; p.fit = 0;
+  if (!ill && days >= 28) {
+    // Schwere Verletzung: bleibende Einbußen, abhängig von Dauer, Alter und medizinischer Abteilung
+    const med = clamp(1.3 - 0.06 * (sl(c.h, "arzt") + sl(c.h, "physio")) - 0.04 * sl(c.h, "reha"), 0.35, 1.3);
+    const loss = clamp((days / 365) * 0.12 * med * (1 + 0.04 * Math.max(0, p.age - 27)) * (0.6 + 0.8 * rng()), 0, 0.15);
+    p.major = (p.major || 0) + 1;
+    if (loss >= 0.004) {
+      const before = p.max;
+      for (const k of ATTRS) p.a[k] = r2(clamp(p.a[k] * (1 - loss * (k === "spd" || k === "fit" ? 1.4 : 0.8)), 0.5, 99.99));
+      refreshPlayer(p); p.pot = r2(Math.max(p.max, p.pot * (1 - loss)));
+      userNews(S, c.owner, `Langzeitfolgen: ${p.name} verliert durch die schwere Verletzung ${(before - p.max).toFixed(2)} Punkte Maximalstärke.`);
+    }
+  }
   userNews(S, c.owner, `${ill ? "Erkrankt" : "Verletzt"}: ${p.name} – ${it.n}, fällt ca. ${days} ${days === 1 ? "Tag" : "Tage"} aus.`);
 }
 function afterMatchHuman(S, X, opp, r, k, compName, isLeague, daySeed) {
@@ -714,11 +951,25 @@ function afterMatchHuman(S, X, opp, r, k, compName, isLeague, daySeed) {
   const rng = rngFrom(daySeed, "post", c.id, compName);
   const ids = new Set(X.players.map((x) => x.p.id));
   const at = (h.allTime[compName] = h.allTime[compName] || {});
-  const bump = (p, key) => { p.s[key]++; p.c[key]++; const e = (at[p.id] = at[p.id] || { name: p.name, apps: 0, g: 0, y: 0, r: 0 }); e.name = p.name; e[key]++; };
+  const bump = (p, key, n = 1) => { p.s[key] = (p.s[key] || 0) + n; p.c[key] = (p.c[key] || 0) + n; const e = (at[p.id] = at[p.id] || { name: p.name, apps: 0, g: 0, y: 0, r: 0 }); e.name = p.name; e[key] = (e[key] || 0) + n; };
+  const ev = new Map(X.players.map(({ p }) => [p.id, { apps: 1, g: 0, as: 0, zw: 0 }]));
   for (const { p } of X.players) bump(p, "apps");
-  for (const g of r.st.g) if (g[1] === k && g[3] && ids.has(g[3])) bump(h.players.find((p) => p.id === g[3]), "g");
+  for (const g of r.st.g) if (g[1] === k) {
+    if (g[3] && ids.has(g[3])) { bump(h.players.find((p) => p.id === g[3]), "g"); ev.get(g[3]).g++; }
+    if (g[5] && ids.has(g[5])) { bump(h.players.find((p) => p.id === g[5]), "as"); ev.get(g[5]).as++; }
+  }
+  const aggF = AGG_DUEL[(X.agg || 3) - 1];
+  for (const { p, slot } of X.players) { const n = Math.round(DUEL_BASE[slot] * (p.a.zwk / 60) * aggF * (0.6 + 0.8 * rng())); if (n) { bump(p, "zw", n); ev.get(p.id).zw += n; } }
+  // Form: Ergebnis, Tore und Vorlagen wirken je nach mentaler Stärke
+  const won = (k ? r.ga > r.gh : r.gh > r.ga), lost = (k ? r.ga < r.gh : r.gh < r.ga);
+  for (const { p } of X.players) { const e = ev.get(p.id); const sw = formSwing(p) / 0.35; p.form = r2(clamp((p.form || 0) + sw * ((won ? 0.08 : lost ? -0.08 : 0) + 0.12 * e.g + 0.06 * e.as), -1, 1)); }
+  // Leistungsprämien laut Vertrag
+  let bonus = 0;
+  for (const { p } of X.players) { const b = p.ct?.bonus; if (!b) continue; const e = ev.get(p.id); bonus += b.app + b.duel * e.zw + b.ast * e.as + b.goal * e.g; }
+  if (bonus) ledger(h, "out", "Prämien Spieler", bonus);
   for (const cd of r.st.c) if (cd[1] === k && cd[4] && ids.has(cd[4])) {
     const p = h.players.find((q) => q.id === cd[4]);
+    if (cd[3] !== "Y") p.form = r2(clamp((p.form || 0) - 0.25 * formSwing(p) / 0.35, -1, 1));
     if (cd[3] === "Y") { bump(p, "y"); if (isLeague && p.s.y % 5 === 0) { p.ban = Math.max(p.ban, 1); userNews(S, c.owner, `${p.name} ist nach der ${p.s.y}. Gelben Karte für ein Spiel gesperrt.`); } }
     else { bump(p, "r"); p.ban = Math.max(p.ban, cd[3] === "R" ? 2 : 1); userNews(S, c.owner, `${cd[3] === "R" ? "Rote Karte" : "Gelb-Rot"} für ${p.name} – Sperre ${cd[3] === "R" ? 2 : 1} Spiel(e).`); }
   }
@@ -1042,16 +1293,17 @@ export function applyAction(S, a, userName, daySeed) {
     }
     case "lineup": {
       if (!h) return fail("Kein Verein.");
-      const comp = P.comp === "pokal" ? "pokal" : "liga";
-      if (comp === "pokal") {
-        h.cup = h.cup || { same: true };
+      const comp = LU_KEY[P.comp] ? P.comp : "liga";
+      const key = LU_KEY[comp];
+      if (key) {
+        const o = (h[key] = h[key] || { same: true });
         if (P.same != null) {
-          h.cup.same = !!P.same;
-          if (!h.cup.same && !h.cup.formation) Object.assign(h.cup, { formation: h.formation, tactic: h.tactic, intensity: h.intensity || 3, aggression: h.aggression || 3, minFit: h.minFit ?? 60, manual: [...(h.manual || [])] });
+          o.same = !!P.same;
+          if (!o.same && !o.formation) Object.assign(o, { formation: h.formation, tactic: h.tactic, intensity: h.intensity || 3, aggression: h.aggression || 3, minFit: h.minFit ?? 60, manual: [...(h.manual || [])] });
         }
       }
-      const tgt = comp === "pokal" ? (h.cup.same === false ? h.cup : null) : h;
-      if (!tgt) return fail("Pokal nutzt die Liga-Aufstellung.");
+      const tgt = key ? (h[key].same === false ? h[key] : null) : h;
+      if (!tgt) return fail("Dieser Wettbewerb nutzt die Liga-Aufstellung.");
       if (P.formation && FORMATIONS[P.formation] && P.formation !== tgt.formation) { tgt.formation = P.formation; tgt.manual = []; }
       if (P.tactic && TACTICS[P.tactic]) tgt.tactic = P.tactic;
       if (P.intensity) tgt.intensity = clamp(Math.round(Number(P.intensity)) || 3, 1, 5);
@@ -1134,10 +1386,15 @@ export function applyAction(S, a, userName, daySeed) {
       const m = marketFor(S, club, daySeed).find((p) => p.id === P.id);
       if (!m) return fail("Spieler nicht mehr auf dem Markt.");
       if (h.cash < m.price) return fail("Nicht genug Geld.");
+      const yrs = clamp(Math.round(Number(P.years)) || 2, 1, 5);
+      const off = contractOffers(m, yrs).find((o) => o.kind === (CT_KINDS[P.kind] ? P.kind : "mix"));
+      if (m.age >= 33 && yrs > 2) return fail(`${m.name} unterschreibt in seinem Alter höchstens 2 Jahre.`);
       ledger(h, "out", "Transfers", m.price);
       S.taken.add(m.id); S.freeAgents = S.freeAgents.filter((x) => x.id !== m.id);
-      h.players.push({ id: "h" + club.id + ":" + m.id, name: m.name, pos: m.pos, age: m.age, a: { ...m.a }, max: m.max, pot: m.pot, wage: wageOf(m.max),
-        fit: m.inj ? 0 : 100, inj: null, ban: 0, s: newStats(), c: newStats() });
+      const np = { id: "h" + club.id + ":" + m.id, name: m.name, pos: m.pos, age: m.age, a: { ...m.a }, max: m.max, pot: m.pot, wage: off.base,
+        fit: m.inj ? 0 : 100, form: 0, inj: null, ban: 0, s: newStats(), c: newStats() };
+      setContract(np, off, ctUntil(S, yrs));
+      h.players.push(np);
       if (m.from) { const ft = S.teams.get(m.from); ft.str = r2(ft.str * 0.997); }
       userNews(S, a.user_id, `${m.name} (${m.pos}, ${m.max.toFixed(2)}) verpflichtet für ${fmt(m.price)}.`);
       return true;
@@ -1156,9 +1413,24 @@ export function applyAction(S, a, userName, daySeed) {
       if (!h) return fail("Kein Verein.");
       const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
       if (h.players.length <= 14) return fail("Mindestens 14 Spieler nötig.");
-      ledger(h, "out", "Abfindungen", p.wage * 0.5);
+      ensureContract(S, p);
+      const remain = Math.max(0, p.ct.until - S.season) + Math.max(0, MATCHDAYS - S.day) / MATCHDAYS;
+      ledger(h, "out", "Abfindungen", p.wage * remain * 0.5);
       h.players = h.players.filter((x) => x !== p);
       S.freeAgents.push({ ...p, id: "fa:" + a.id });
+      return true;
+    }
+    case "contract": {
+      if (!h) return fail("Kein Verein.");
+      const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
+      ensureContract(S, p);
+      const yrs = clamp(Math.round(Number(P.years)) || 1, 1, 5);
+      if (p.age >= 33 && yrs > 2) return fail(`${p.name} unterschreibt in seinem Alter höchstens 2 Jahre.`);
+      if (p.retiring) return fail(`${p.name} beendet zum Saisonende seine Karriere.`);
+      const off = contractOffers(p, yrs).find((o) => o.kind === (CT_KINDS[P.kind] ? P.kind : "mix"));
+      const until = Math.max(p.ct.until, S.season - 1 + (S.day > 17 ? 1 : 0)) + yrs;
+      setContract(p, off, until);
+      userNews(S, a.user_id, `${p.name} verlängert bis Saison ${until} (${CT_KINDS[off.kind]}, ${fmt(off.base)} fix pro Saison).`);
       return true;
     }
     case "sponsor": {
@@ -1255,6 +1527,8 @@ export function playDay(S, g, daySeed) {
       news(S, `${cup.name}: ${S.teams.get(cup.winner).name} gewinnt den Pokal!`);
     } else drawRound(S, cup, ri + 1, rngFrom(daySeed, "draw", cup.id, ri + 1));
   }
+  // Europapokal
+  if (S.euro) euroDay(S, d, daySeed);
   // Menschliche Vereine: Tageskosten, Training
   for (const c of S.clubs.values()) if (c.h) humanDaily(S, c, daySeed);
   // KI-Form: leichte Schwankung
@@ -1302,6 +1576,30 @@ function matchFinance(S, hid, aid, r, level, isCup, cup) {
   }
 }
 
+// Karriereende: Wahrscheinlichkeit je Alter aus einer Normalverteilung des Karriereendes
+// (Profis: im Schnitt ~33 Jahre, Spitzenspieler ~35, Torhüter ~2–3 Jahre später; Streuung ~3,3 Jahre).
+function normCdf(x) { const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x / 2); return x >= 0 ? 0.5 * (1 + y) : 0.5 * (1 - y); }
+export function retireChance(p, L) {
+  if (p.age < 28) return 0;
+  const posAdj = p.pos === "TW" ? 2.5 : ["IV", "DM", "MS"].includes(p.pos) ? 0.5 : ["AS", "AV", "AM"].includes(p.pos) ? -0.5 : 0;
+  const lvlAdj = clamp((p.max / Math.max(1, levelMid(L)) - 1) * 4, -1.5, 1.5);
+  const mu = 33.3 + posAdj + lvlAdj - 0.6 * (p.major || 0) + ((p.a?.fit ?? 50) - 50) / 50;
+  const sd = 3.3;
+  const a0 = normCdf((p.age - 0.5 - mu) / sd), a1 = normCdf((p.age + 0.5 - mu) / sd);
+  return clamp((a1 - a0) / Math.max(1e-6, 1 - a0), 0, 0.97);
+}
+function retirementCheck(S, c, daySeed) {
+  const h = c.h, L = Math.min(firstTeam(S, c).level, 11);
+  const rng = rngFrom(daySeed, "retire", c.id);
+  const out = [];
+  for (const p of h.players) {
+    if (p.retiring) continue;
+    let q = retireChance({ ...p, age: p.age + 1 }, L);
+    if (p.ct && p.ct.until > S.season) q *= 0.35;       // laufender Vertrag wird meist erfüllt
+    if (rng() < q) { p.retiring = true; out.push(`${p.name} (${p.age})`); }
+  }
+  if (out.length) userNews(S, c.owner, `Karriereende zum Saisonende angekündigt: ${out.join(", ")}.`);
+}
 function humanDaily(S, c, daySeed) {
   const h = c.h; const t = firstTeam(S, c);
   if (t.status === "pending") return;
@@ -1322,6 +1620,18 @@ function humanDaily(S, c, daySeed) {
   const trainerF = (0.5 + 0.22 * sl(h, "cotrainer") + 0.06 * sl(h, "headcoach")) * (1 + 0.01 * sl(h, "praesident"));
   const mf = monthFactor(S);
   const illNow = h.players.filter((p) => p.inj?.ill).length;
+  const frng = rngFrom(daySeed, "form", c.id);
+  for (const p of h.players) {
+    ensureContract(S, p);
+    // Form: tägliche Schwankung, kehrt langsam zur Mitte zurück
+    const sw = formSwing(p);
+    p.form = r2(clamp((p.form || 0) * 0.85 + (frng() - 0.5) * 2 * sw * 0.35, -1, 1));
+  }
+  if (S.day === 20) {
+    const exp = h.players.filter((p) => p.ct.until <= S.season && !p.retiring);
+    if (exp.length) userNews(S, c.owner, `Verträge laufen zum Saisonende aus: ${exp.map((p) => p.name).join(", ")}. Verlängern im Kader.`);
+  }
+  if (S.day === 25) retirementCheck(S, c, daySeed);
   for (const p of h.players) {
     if (p.inj) {
       p.fit = 0;
@@ -1392,6 +1702,7 @@ function seasonEnd(S, daySeed) {
   S.archive.push({ season: S.season, leagues: Object.fromEntries([...S.leagues.values()].filter((l) => l.teams.length).map((l) => [l.id, { name: l.name, level: l.level, rows: S.lastTables.get(l.id).map((r) => ({ id: r.id, name: r.name, p: r.p, w: r.w, d: r.d, l: r.l, gf: r.gf, ga: r.ga, pts: r.pts })), scorers: topScorers(S, 10, l.id).map((x) => ({ name: x.name, team: S.teams.get(x.team)?.name, goals: x.goals })) }])) });
   S.cupWinners = {};
   for (const cup of S.cups) S.cupWinners[cup.id] = { winner: cup.winner, runnerUp: cup.runnerUp };
+  if (S.euro) euroSeasonEnd(S);
   // Trophäen
   for (const lg of S.leagues.values()) {
     const tab = S.lastTables.get(lg.id); if (!tab?.length) continue;
@@ -1473,10 +1784,21 @@ function seasonEnd(S, daySeed) {
     if (!c.h) continue;
     const h = c.h, t = firstTeam(S, c); const L = Math.min(t.level, 11);
     const rr = rngFrom(daySeed, "youth", c.id);
-    for (const p of h.players) { p.age++; p.wage = wageOf(p.max); }
-    const retire = h.players.filter((p) => p.age >= 36 || (p.age >= 33 && rr() < 0.25));
-    if (retire.length) userNews(S, c.owner, "Karriereende: " + retire.map((p) => p.name).join(", "));
-    h.players = h.players.filter((p) => !retire.includes(p));
+    const retire = h.players.filter((p) => p.retiring);
+    if (retire.length) userNews(S, c.owner, "Karriereende: " + retire.map((p) => `${p.name} (${p.age + 1})`).join(", ") + ". Danke für alles!");
+    // GF Sport verlängert auf Wunsch wichtige Verträge
+    if (sl(h, "gf") && h.gf.tasks.squad) {
+      const avg = h.players.reduce((a, p) => a + p.max, 0) / Math.max(1, h.players.length);
+      for (const p of h.players) if (!p.retiring && p.ct?.until <= S.season && (p.max >= avg * (1.05 - 0.03 * sl(h, "gf")) || p.age <= 21) && p.age < 33) {
+        const off = contractOffers(p, 2).find((o) => o.kind === "mix"); setContract(p, off, S.season + 2);
+        userNews(S, c.owner, `GF Sport verlängert mit ${p.name} bis Saison ${S.season + 2}.`);
+      }
+    }
+    const leaving = h.players.filter((p) => !p.retiring && p.ct && p.ct.until <= S.season);
+    if (leaving.length) userNews(S, c.owner, "Vertrag ausgelaufen, ablösefrei weg: " + leaving.map((p) => p.name).join(", "));
+    for (const p of leaving) S.freeAgents.push({ ...p, id: "fa:" + S.season + ":" + p.id, ct: null });
+    h.players = h.players.filter((p) => !p.retiring && !leaving.includes(p));
+    for (const p of h.players) { p.age++; if (!p.ct) p.wage = wageOf(p.max); }
     const nlz = sl(h, "nlz");
     const n = 2 + Math.floor(h.fac.jugend / 3) + Math.floor(nlz / 2);
     for (let i = 0; i < n; i++) {
@@ -1484,6 +1806,7 @@ function seasonEnd(S, daySeed) {
       const pos = POSITIONS[Math.floor(rr() * POSITIONS.length)];
       const p = genPlayer(rr, pos, base, 17 + Math.floor(rr() * 2), "y" + c.id + ":" + S.season, h.youthSeq++);
       p.pot = r2(clamp(p.max * (1.5 + 0.09 * h.fac.jugend + rr() * 0.4) * (1 + 0.05 * nlz), p.max, 99.99));
+      setContract(p, contractOffers(p, 3).find((o) => o.kind === "fest"), S.season + 3);
       h.players.push(p);
     }
     userNews(S, c.owner, `${n} Talente aus der eigenen Jugend rücken in den Kader auf.`);
