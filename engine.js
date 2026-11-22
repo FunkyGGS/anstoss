@@ -569,14 +569,30 @@ export function aiSquad(S, t) {
 }
 
 // Startelf: verfügbare Spieler (nicht verletzt/gesperrt) nach aktueller Stärke auf die Positionen der Formation
-export function humanXI(S, c) {
-  const h = c.h;
-  const slots = FORMATIONS[h.formation] || FORMATIONS["4-4-2"];
-  const minFit = h.minFit ?? 60;
+export const COMPS = { liga: "Liga", pokal: "Pokal" };
+// Einstellungen je Wettbewerb: Liga = Grundeinstellung, Pokal optional abweichend
+export function setupOf(h, comp = "liga") {
+  const base = { formation: h.formation, tactic: h.tactic, intensity: h.intensity || 3, aggression: h.aggression || 3, minFit: h.minFit ?? 60, manual: h.manual || [] };
+  if (comp !== "pokal" || !h.cup || h.cup.same !== false) return { ...base, same: comp === "pokal" };
+  return { formation: h.cup.formation || base.formation, tactic: h.cup.tactic || base.tactic, intensity: h.cup.intensity || base.intensity, aggression: h.cup.aggression || base.aggression, minFit: h.cup.minFit ?? base.minFit, manual: h.cup.manual || [], same: false };
+}
+export function humanXI(S, c, comp = "liga") {
+  const h = c.h, U = setupOf(h, comp);
+  const slots = FORMATIONS[U.formation] || FORMATIONS["4-4-2"];
+  const minFit = U.minFit;
   const docOn = h.followDoc && sl(h, "arzt") > 0;
   const ready = h.players.filter((p) => !p.inj && !(p.ban > 0) && p.fit > 0 && !(docOn && p.fit < DOC_REST[sl(h, "arzt")]));
   const used = new Set(), xi = [];
-  const order = slots.map((pos, i) => ({ pos, i })).sort((a, b) => (a.pos === "TW" ? -1 : b.pos === "TW" ? 1 : 0));
+  // fest eingeplante Spieler zuerst (sofern einsatzfähig)
+  const readyIds = new Set(ready.map((p) => p.id));
+  slots.forEach((pos, i) => {
+    const id = U.manual[i];
+    if (!id || used.has(id) || !readyIds.has(id)) return;
+    const p = ready.find((q) => q.id === id);
+    let v = curStrength(p, pos); if (pos === "TW") v *= 1 + 0.01 * sl(h, "twtrainer");
+    used.add(id); xi[i] = { slot: pos, p, eff: v, max: posStrength(p, pos), fixed: true };
+  });
+  const order = slots.map((pos, i) => ({ pos, i })).filter(({ i }) => !xi[i]).sort((a, b) => (a.pos === "TW" ? -1 : b.pos === "TW" ? 1 : 0));
   for (const { pos, i } of order) {
     let best = null, bv = -1, bk = -1;
     for (const p of ready) {
@@ -591,11 +607,11 @@ export function humanXI(S, c) {
   const missing = xi.filter((x) => !x.p).length;
   const base = xi.reduce((s2, x) => s2 + x.eff, 0) / 11;
   const maxStr = xi.reduce((s2, x) => s2 + x.max, 0) / 11;
-  let str = base * (1 + INT_PERF[(h.intensity || 3) - 1]);
+  let str = base * (1 + INT_PERF[U.intensity - 1]);
   str *= 1 + HC_B[sl(h, "headcoach")] + 0.004 * sl(h, "taktik") + 0.003 * sl(h, "psycho") + 0.002 * sl(h, "betreuer") + 0.003 * sl(h, "praesident");
   const xp = xi.filter((x) => x.p);
   const avgA = (k) => xp.length ? xp.reduce((s2, x) => s2 + x.p.a[k], 0) / xp.length : 0;
-  return { str: r2(str), max: r2(maxStr), xi, missing, zwk: avgA("zwk"), disc: (avgA("tak") + avgA("men")) / 2, ovr: xp.length ? xp.reduce((s2, x) => s2 + x.p.max, 0) / xp.length : 1 };
+  return { str: r2(str), max: r2(maxStr), xi, missing, setup: U, zwk: avgA("zwk"), disc: (avgA("tak") + avgA("men")) / 2, ovr: xp.length ? xp.reduce((s2, x) => s2 + x.p.max, 0) / xp.length : 1 };
 }
 
 // ---------------------------------------------------------------- Spiel
@@ -604,11 +620,11 @@ export function teamStrength(S, t) {
   if (t.rank === 1 && c && c.h) return humanXI(S, c).str;
   return r2(t.str * AI_FIT);
 }
-function sideInfo(S, tid) {
+function sideInfo(S, tid, comp = "liga") {
   const t = S.teams.get(tid); const c = S.clubs.get(t.clubId);
   if (t.rank === 1 && c?.h) {
-    const X = humanXI(S, c);
-    return { t, c, human: true, X, str: X.str, tac: TACTICS[c.h.tactic] || TACTICS.normal, tacName: c.h.tactic, agg: c.h.aggression || 3, players: X.xi.filter((x) => x.p).map((x) => ({ p: x.p, slot: x.slot })) };
+    const X = humanXI(S, c, comp), U = X.setup;
+    return { t, c, human: true, X, comp, str: X.str, tac: TACTICS[U.tactic] || TACTICS.normal, tacName: U.tactic, agg: U.aggression, players: X.xi.filter((x) => x.p).map((x) => ({ p: x.p, slot: x.slot })) };
   }
   const getPool = () => {
     const key = "pool:" + t.id + ":" + S.season;
@@ -625,8 +641,8 @@ function pickWeighted(rng, list, wf) {
   return list[list.length - 1];
 }
 // Spielt eine Partie inklusive Karten, Torschützen und Statistik
-function playMatch(S, h, a, rng, neutral = false) {
-  const H = sideInfo(S, h), A = sideInfo(S, a);
+function playMatch(S, h, a, rng, neutral = false, comp = "liga") {
+  const H = sideInfo(S, h, comp), A = sideInfo(S, a, comp);
   const sides = [H, A];
   const st = { p: [50, 50], s: [0, 0], o: [0, 0], f: [0, 0], y: [0, 0], r: [0, 0], g: [], c: [] };
   // Karten
@@ -694,7 +710,7 @@ function injure(S, c, p, rng, list, sevBoost, ill) {
   userNews(S, c.owner, `${ill ? "Erkrankt" : "Verletzt"}: ${p.name} – ${it.n}, fällt ca. ${days} ${days === 1 ? "Tag" : "Tage"} aus.`);
 }
 function afterMatchHuman(S, X, opp, r, k, compName, isLeague, daySeed) {
-  const c = X.c, h = c.h, lvl = (h.intensity || 3) - 1;
+  const c = X.c, h = c.h, lvl = (X.X.setup?.intensity || h.intensity || 3) - 1;
   const rng = rngFrom(daySeed, "post", c.id, compName);
   const ids = new Set(X.players.map((x) => x.p.id));
   const at = (h.allTime[compName] = h.allTime[compName] || {});
@@ -1017,11 +1033,40 @@ export function applyAction(S, a, userName, daySeed) {
     }
     case "tactic": {
       if (!h) return fail("Kein Verein.");
-      if (P.formation && FORMATIONS[P.formation]) h.formation = P.formation;
+      if (P.formation && FORMATIONS[P.formation] && P.formation !== h.formation) { h.formation = P.formation; h.manual = []; }
       if (P.tactic && TACTICS[P.tactic]) h.tactic = P.tactic;
       if (P.intensity) h.intensity = clamp(Math.round(Number(P.intensity)) || 3, 1, 5);
       if (P.aggression) h.aggression = clamp(Math.round(Number(P.aggression)) || 3, 1, 5);
       if (P.minFit != null) h.minFit = clamp(Math.round(Number(P.minFit)) || 0, 0, 90);
+      return true;
+    }
+    case "lineup": {
+      if (!h) return fail("Kein Verein.");
+      const comp = P.comp === "pokal" ? "pokal" : "liga";
+      if (comp === "pokal") {
+        h.cup = h.cup || { same: true };
+        if (P.same != null) {
+          h.cup.same = !!P.same;
+          if (!h.cup.same && !h.cup.formation) Object.assign(h.cup, { formation: h.formation, tactic: h.tactic, intensity: h.intensity || 3, aggression: h.aggression || 3, minFit: h.minFit ?? 60, manual: [...(h.manual || [])] });
+        }
+      }
+      const tgt = comp === "pokal" ? (h.cup.same === false ? h.cup : null) : h;
+      if (!tgt) return fail("Pokal nutzt die Liga-Aufstellung.");
+      if (P.formation && FORMATIONS[P.formation] && P.formation !== tgt.formation) { tgt.formation = P.formation; tgt.manual = []; }
+      if (P.tactic && TACTICS[P.tactic]) tgt.tactic = P.tactic;
+      if (P.intensity) tgt.intensity = clamp(Math.round(Number(P.intensity)) || 3, 1, 5);
+      if (P.aggression) tgt.aggression = clamp(Math.round(Number(P.aggression)) || 3, 1, 5);
+      if (P.minFit != null) tgt.minFit = clamp(Math.round(Number(P.minFit)) || 0, 0, 90);
+      if (P.reset) tgt.manual = [];
+      if (P.slot != null) {
+        const n = (FORMATIONS[tgt.formation] || FORMATIONS["4-4-2"]).length;
+        const i = Math.round(Number(P.slot)); if (!(i >= 0 && i < n)) return fail("Ungültige Position.");
+        const m = (tgt.manual = (tgt.manual || []).slice(0, n));
+        const id = P.player || null;
+        if (id && !h.players.some((x) => x.id === id)) return fail("Spieler nicht im Kader.");
+        if (id) for (let k = 0; k < n; k++) if (m[k] === id) m[k] = null;
+        m[i] = id;
+      }
       return true;
     }
     case "ticket": {
@@ -1186,7 +1231,7 @@ export function playDay(S, g, daySeed) {
     const winners = [...rd.byes];
     for (const m of rd.matches) {
       const rr = rngFrom(daySeed, cup.id, m.h, m.a);
-      const r = playMatch(S, m.h, m.a, rr, ri === cup.days.length - 1 && cup.type === "dfb");
+      const r = playMatch(S, m.h, m.a, rr, ri === cup.days.length - 1 && cup.type === "dfb", "pokal");
       m.gh = r.gh; m.ga = r.ga; m.st = r.st;
       if (r.H.human) afterMatchHuman(S, r.H, r.A, r, 0, cup.name, false, daySeed);
       if (r.A.human) afterMatchHuman(S, r.A, r.H, r, 1, cup.name, false, daySeed);

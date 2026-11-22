@@ -65,3 +65,4 @@ Link und Einladungscode schicken. Jeder legt mit E-Mail und Passwort ein Konto a
 - Daten: kicker.de, fussball.de, Wikipedia. Stand 21.11.2026, Reihenfolge entspricht dem damaligen Tabellenstand.
 - **Chat:** eigene Nachrichten bearbeiten (Hinweis „bearbeitet“) und löschen – dafür einmalig `supabase_chat_edit.sql` ausführen.
 - **Namen ändern:** Spieler im eigenen Kader (Kader → Spieler antippen) und Personal (✎ im Reiter Personal) lassen sich umbenennen.
+- **Aufstellungen (Liga / Pokal):** Formation, Spielweise, Intensität, Aggressivität, Rotation und feste Spieler je Position – im Pokal optional mit eigener Aufstellung.

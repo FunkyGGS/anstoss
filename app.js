@@ -135,7 +135,7 @@ function initials(name) { return name.replace(/[^A-Za-zÄÖÜäöüß0-9 ]/g, ""
 // ------------------------------------------------------------ Rahmen
 function render() {
   const c = myClub(); const u = meUser();
-  const tabs = c ? [["home", "Übersicht"], ["kader", "Kader"], ["transfer", "Transfers"], ["personal", "Personal"], ["verein", "Verein"], ["finanzen", "Finanzen"], ["statistik", "Statistik"], ["ligen", "Ligen"], ["pokale", "Pokale"], ["erfolge", "Erfolge"], ["chat", "Chat" + unreadBadge()], ["spieler", "Mitspieler"]]
+  const tabs = c ? [["home", "Übersicht"], ["kader", "Kader"], ["aufstellung", "Aufstellungen"], ["transfer", "Transfers"], ["personal", "Personal"], ["verein", "Verein"], ["finanzen", "Finanzen"], ["statistik", "Statistik"], ["ligen", "Ligen"], ["pokale", "Pokale"], ["erfolge", "Erfolge"], ["chat", "Chat" + unreadBadge()], ["spieler", "Mitspieler"]]
     : [["start", "Start"], ["ligen", "Ligen"], ["pokale", "Pokale"], ["erfolge", "Erfolge"], ["chat", "Chat" + unreadBadge()], ["spieler", "Mitspieler"]];
   if (!tabs.find((t) => t[0] === app.tab)) app.tab = tabs[0][0];
   const t = c ? E.firstTeam(S(), c) : null;
@@ -159,7 +159,7 @@ function render() {
   </div></header><main class="wrap" id="main"></main>`;
   $app.querySelectorAll("nav button").forEach((b) => (b.onclick = () => { app.tab = b.dataset.tab; render(); }));
   const main = document.getElementById("main");
-  const view = { home: vHome, kader: vKader, transfer: vTransfer, verein: vVerein, personal: vPersonal, finanzen: vFinanzen, ligen: vLigen, pokale: vPokale, spieler: vSpieler, start: vStart, erfolge: vErfolge, chat: vChat, statistik: vStatistik }[app.tab];
+  const view = { home: vHome, kader: vKader, transfer: vTransfer, verein: vVerein, personal: vPersonal, aufstellung: vAufstellung, finanzen: vFinanzen, ligen: vLigen, pokale: vPokale, spieler: vSpieler, start: vStart, erfolge: vErfolge, chat: vChat, statistik: vStatistik }[app.tab];
   main.innerHTML = view();
   bindActions(main);
   if (app.tab === "chat") bindChat(main);
@@ -178,6 +178,7 @@ function bindActions(root) {
       if (type === "gfSettings" && el.dataset.key === "budget") payload = { budget: Number(document.getElementById("gfbudget").value) };
       if (type === "gfSettings" && el.dataset.task) payload = { tasks: { [el.dataset.task]: el.checked } };
       if (type === "doctor") payload = { follow: el.checked };
+      if (type === "lineup" && el.type === "checkbox") payload = { comp: "pokal", same: !el.checked };
       if (type === "rename") { const inp = document.getElementById(payload.what === "staff" ? "rn-staff-" + payload.role : "rn-" + payload.id); payload = { ...payload, name: inp?.value || "" }; if (payload.what === "staff") app.sel.staffRn = ""; }
       if (type === "staff") payload = { role: el.dataset.role, lvl: Number(el.value) };
       act(type, payload);
@@ -249,7 +250,7 @@ function vHome() {
       ${extra}</div>` : "";
     parts.push(`<div class="grid g2">
       ${m ? mbox(`Nächstes Spiel · Spieltag ${nd.day} · heute 18:00`, m, `<p class="small muted" style="text-align:center;margin:8px 0 0">Stärke ${st(E.teamStrength(S(), team(m.h)))} gegen ${st(E.teamStrength(S(), team(m.a)))} · ${esc(c.h.formation)}, ${esc(c.h.tactic)}, Intensität ${c.h.intensity || 3}, Aggressivität ${c.h.aggression || 3}</p>`) : `<div class="card"><div class="lvl">Nächster Spieltag</div><p>${nd.day === 35 ? "Heute ist Saisonumbruch: Auf- und Abstieg, Jahresabschluss, Jugend." : "Spielfrei."}</p></div>`}
-      ${cm ? mbox(`${cm.cup.name} · zusätzlich heute`, cm.m) : ""}
+      ${cm ? mbox(`${cm.cup.name} · ${m ? "zusätzlich " : ""}heute 18:00`, cm.m, (() => { const U = E.setupOf(c.h, "pokal"); return `<p class="small muted" style="text-align:center;margin:8px 0 0">${U.same ? "Liga-Aufstellung" : "Eigene Pokal-Aufstellung"} · ${esc(U.formation)}, ${esc(U.tactic)}, Intensität ${U.intensity} · Stärke ${st(E.humanXI(S(), c, "pokal").str)}</p>`; })()) : ""}
       ${m || cm ? oppCard(c, t, m || cm.m) : ""}
       ${last ? mbox(`Letztes Ligaspiel · Spieltag ${lastDay}`, last, c.h.lastAtt ? `<p class="small muted" style="text-align:center;margin:8px 0 0">Zuschauer zuletzt daheim: ${c.h.lastAtt.toLocaleString("de-DE")}</p>` : "") : ""}
       ${lastCup ? mbox(`${lastCup.cup.name} · Ergebnis`, lastCup.m, lastCup.m.pen ? `<p class="small muted" style="text-align:center">nach Elfmeterschießen</p>` : lastCup.m.et ? `<p class="small muted" style="text-align:center">nach Verlängerung</p>` : "") : ""}
@@ -318,6 +319,46 @@ function vKader() {
   ${ps.map((p) => `<tr class="${slotOf.has(p.id) ? "xi" : ""}" data-sel="player" data-v="${open === p.id ? "" : esc(p.id)}" style="cursor:pointer"><td>${p.pos}${slotOf.has(p.id) && slotOf.get(p.id) !== p.pos ? `<span class="small muted">→${slotOf.get(p.id)}</span>` : ""}</td><td>${esc(p.name)}</td><td class="r">${p.age}</td><td>${fitBar(p.fit)}</td>
     <td class="r"><b>${st(p.inj ? 0 : E.curStrength(p))}</b></td><td class="r muted">${st(p.max)}</td><td>${statusOf(p)}${doc(p)}</td><td class="r">${p.s.apps}</td><td class="r">${p.s.g}</td><td class="r">${p.s.y}</td><td class="r">${p.s.r}</td></tr>${open === p.id ? detail(p) : ""}`).join("")}
   </tbody></table></div><p class="small muted">Blau markiert: aktuelle Startelf (→ andere Position). Statistik der laufenden Saison inklusive Pokalspielen.</p>`;
+}
+
+
+// ------------------------------------------------------------ Aufstellungen (Liga / Pokal)
+function vAufstellung() {
+  const c = myClub(), h = c.h;
+  const comp = app.sel.lineupComp === "pokal" ? "pokal" : "liga";
+  const X = E.humanXI(S(), c, comp), U = X.setup;
+  const locked = comp === "pokal" && U.same;
+  const sel = (key, opts, cur) => `<select data-act="lineup" data-key="${key}" data-p='${esc(JSON.stringify({ comp }))}' ${locked ? "disabled" : ""}>${opts.map(([v, n]) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${n}</option>`).join("")}</select>`;
+  const slots = E.FORMATIONS[U.formation] || E.FORMATIONS["4-4-2"];
+  const avail = (p) => !p.inj && !(p.ban > 0) && p.fit > 0;
+  const tag = (p) => p.inj ? ` – ${p.inj.n}` : p.ban > 0 ? " – gesperrt" : p.fit <= 0 ? " – nicht spielfit" : "";
+  const rows = slots.map((pos, i) => {
+    const cur = X.xi[i]; const want = U.manual[i] || "";
+    const wantP = want ? h.players.find((p) => p.id === want) : null;
+    const cand = h.players.slice().sort((a, b) => E.posStrength(b, pos) - E.posStrength(a, pos));
+    const opts = `<option value="">Automatisch${!want && cur?.p ? ` (${esc(cur.p.name)})` : ""}</option>` + cand.map((p) => `<option value="${esc(p.id)}" ${p.id === want ? "selected" : ""} ${avail(p) ? "" : "style=\"color:#b42318\""}>${esc(p.name)} (${p.pos}) · ${st(E.posStrength(p, pos))} · Fit ${Math.round(p.fit)}${tag(p)}</option>`).join("");
+    const note = wantP && !(cur?.p && cur.p.id === want) ? `<div class="small crit">${esc(wantP.name)} fällt aus${tag(wantP) || " (Arzt rät ab)"} – wird automatisch ersetzt.</div>` : "";
+    return `<tr><td><b>${pos}</b></td><td style="min-width:220px"><select data-act="lineup" data-key="player" data-p='${esc(JSON.stringify({ comp, slot: i }))}' ${locked ? "disabled" : ""} style="width:100%">${opts}</select>${note}</td>
+      <td>${cur?.p ? `${esc(cur.p.name)}${cur.fixed ? ' <span class="pill">fest</span>' : ""}` : '<span class="crit">niemand verfügbar</span>'}</td><td class="r">${cur?.p ? st(cur.eff) : "–"}</td><td>${cur?.p ? fitBar(cur.p.fit) : ""}</td></tr>`;
+  }).join("");
+  const nd = nextDay(), t = E.firstTeam(S(), c);
+  const cm = nd.day <= 34 ? cupMatchFor(t, nd.day) : null;
+  return `<div class="row" style="justify-content:space-between"><h2>Aufstellungen</h2>
+    <div class="seg">${[["liga", "Liga"], ["pokal", "Pokal"]].map(([k, n]) => `<button data-sel="lineupComp" data-v="${k}" aria-pressed="${comp === k}">${n}</button>`).join("")}</div></div>
+  <p class="sub">${comp === "liga" ? "Gilt für alle Ligaspiele (entspricht den Einstellungen im Kader)." : `Gilt für alle Pokalspiele${cm ? ` – nächstes: <b>${esc(cm.cup.name)}</b> heute 18:00` : ""}.`} Feste Spieler werden gesetzt, sofern sie einsatzfähig sind; alle anderen Positionen füllt das Spiel automatisch mit den fittesten und stärksten Spielern.</p>
+  ${comp === "pokal" ? `<div class="card" style="margin-bottom:12px"><label class="small" style="display:flex;gap:8px;align-items:center"><input style="flex:none" type="checkbox" data-act="lineup" ${U.same ? "" : "checked"}> <b>Eigene Pokal-Aufstellung verwenden</b></label>
+    <p class="small muted" style="margin:6px 0 0">${U.same ? "Aktuell spielt die Mannschaft im Pokal mit der Liga-Aufstellung." : "Ideal, um im Pokal Stammspieler zu schonen oder Talenten Spielzeit zu geben."}</p></div>` : ""}
+  <div class="card" style="margin-bottom:12px${locked ? ";opacity:.6" : ""}"><div class="grid g2" style="gap:10px">
+    <div class="row"><label class="muted" style="width:110px">Formation</label>${sel("formation", Object.keys(E.FORMATIONS).map((f) => [f, f]), U.formation)}</div>
+    <div class="row"><label class="muted" style="width:110px">Spielweise</label>${sel("tactic", Object.keys(E.TACTICS).map((f) => [f, f]), U.tactic)}</div>
+    <div class="row"><label class="muted" style="width:110px">Intensität</label>${sel("intensity", E.INTENSITY.map((n, i) => [i + 1, `${i + 1} – ${n}`]), U.intensity)}</div>
+    <div class="row"><label class="muted" style="width:110px">Aggressivität</label>${sel("aggression", E.AGGRESSION.map((n, i) => [i + 1, `${i + 1} – ${n}`]), U.aggression)}</div>
+    <div class="row"><label class="muted" style="width:110px">Rotation ab</label>${sel("minFit", [[0, "keine Schonung"], [40, "Fitness unter 40"], [50, "Fitness unter 50"], [60, "Fitness unter 60"], [70, "Fitness unter 70"], [80, "Fitness unter 80"], [90, "Fitness unter 90"]], U.minFit)}</div>
+    <div class="row"><label class="muted" style="width:110px">Stärke</label><b>${st(X.str)}</b><span class="small muted">&nbsp;aktuell / ${st(X.max)} max</span></div>
+  </div></div>
+  <div class="card scroll"><table><thead><tr><th>Pos</th><th>Einplanung</th><th>Spielt</th><th class="r">Stärke</th><th>Fitness</th></tr></thead><tbody>${rows}</tbody></table>
+  <div style="margin-top:8px">${locked ? "" : btn("Alle Positionen automatisch", "lineup", { comp, reset: true }, "btn sm")}</div></div>
+  <p class="small muted">Rot markierte Spieler sind derzeit nicht einsatzfähig. Bei einem Formationswechsel werden die festen Einplanungen zurückgesetzt.</p>`;
 }
 
 // ------------------------------------------------------------ Transfers & Trainer
