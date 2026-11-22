@@ -1069,6 +1069,20 @@ export function applyAction(S, a, userName, daySeed) {
       return true;
     }
     case "doctor": { if (!h) return fail("Kein Verein."); h.followDoc = !!P.follow; return true; }
+    case "rename": {
+      if (!h) return fail("Kein Verein.");
+      const name = String(P.name || "").replace(/[\u0000-\u001f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
+      if (name.length < 2) return fail("Name zu kurz.");
+      if (P.what === "staff") {
+        const st = h.staff?.[P.role]; if (!st) return fail("Amt nicht besetzt.");
+        st.name = name; return true;
+      }
+      const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht im Kader.");
+      p.name = name;
+      for (const comp in h.allTime) if (h.allTime[comp][p.id]) h.allTime[comp][p.id].name = name;
+      for (const m of S.lscorers.values()) { const e = m.get(p.id); if (e) e.name = name; }
+      return true;
+    }
     case "buyPlayer": {
       if (!h) return fail("Kein Verein.");
       if (h.players.length >= 30) return fail("Kader voll (max. 30).");

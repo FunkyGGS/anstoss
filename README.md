@@ -63,3 +63,5 @@ Link und Einladungscode schicken. Jeder legt mit E-Mail und Passwort ein Konto a
 - Jedes Gerät berechnet den Spielstand aus allen Aktionen selbst. Mit ca. 400 Spielen pro Tag dauert das auch nach vielen Saisons nur Sekundenbruchteile.
 - Änderungen an `engine.js` während eines laufenden Spiels verändern rückwirkend alle Ergebnisse. Regeländerungen also am besten nur vor dem Start oder mit neuem Startdatum (`delete from actions;`).
 - Daten: kicker.de, fussball.de, Wikipedia. Stand 21.11.2026, Reihenfolge entspricht dem damaligen Tabellenstand.
+- **Chat:** eigene Nachrichten bearbeiten (Hinweis „bearbeitet“) und löschen – dafür einmalig `supabase_chat_edit.sql` ausführen.
+- **Namen ändern:** Spieler im eigenen Kader (Kader → Spieler antippen) und Personal (✎ im Reiter Personal) lassen sich umbenennen.

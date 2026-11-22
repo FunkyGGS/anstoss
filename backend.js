@@ -48,6 +48,8 @@ const solo = {
     this.s.actions.push({ id: this.s.nextId++, user_id: "solo", type, payload, eff_day: eff }); soloSave(this.s);
   },
   async messages() { return (this.s.msgs || []).slice(-200); },
+  async editMessage(id, body) { const m = (this.s.msgs || []).find((x) => x.id === id); if (m) { m.body = body; m.edited_at = new Date().toISOString(); soloSave(this.s); } },
+  async deleteMessage(id) { this.s.msgs = (this.s.msgs || []).filter((x) => x.id !== id); soloSave(this.s); },
   async sendMessage(to, body) { this.s.msgs = this.s.msgs || []; this.s.msgs.push({ id: Date.now(), user_id: "solo", to_user: to || null, body, created_at: new Date().toISOString() }); soloSave(this.s); },
   async rename(name) { this.s.name = name; soloSave(this.s); },
   reset() { localStorage.removeItem(LS); },
@@ -88,8 +90,17 @@ const online = {
   },
   async members() { const { data, error } = await sb.from("members").select("user_id,display_name"); if (error) throw error; return Object.fromEntries(data.map((m) => [m.user_id, m.display_name])); },
   async messages() {
-    const { data, error } = await sb.from("messages").select("id,user_id,to_user,body,created_at").order("id", { ascending: false }).limit(200);
+    let { data, error } = await sb.from("messages").select("id,user_id,to_user,body,created_at,edited_at").order("id", { ascending: false }).limit(200);
+    if (error && /edited_at/.test(error.message || "")) ({ data, error } = await sb.from("messages").select("id,user_id,to_user,body,created_at").order("id", { ascending: false }).limit(200));
     if (error) throw error; return data.reverse();
+  },
+  async editMessage(id, body) {
+    const { data, error } = await sb.from("messages").update({ body }).eq("id", id).select("id");
+    if (error) throw error; if (!data?.length) throw new Error("Bearbeiten ist noch nicht freigeschaltet (supabase_chat_edit.sql ausführen).");
+  },
+  async deleteMessage(id) {
+    const { data, error } = await sb.from("messages").delete().eq("id", id).select("id");
+    if (error) throw error; if (!data?.length) throw new Error("Löschen ist noch nicht freigeschaltet (supabase_chat_edit.sql ausführen).");
   },
   async sendMessage(to, body) { const { error } = await sb.from("messages").insert({ to_user: to || null, body }); if (error) throw error; },
   async submit(type, payload) { const { error } = await sb.from("actions").insert({ type, payload }); if (error) throw error; },

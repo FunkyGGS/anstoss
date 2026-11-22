@@ -40,10 +40,10 @@ async function loadMsgs() {
   try { app.msgs = await backend.messages(); app.chatError = null; } catch (e) { app.msgs = app.msgs || []; app.chatError = e.message || String(e); }
 }
 async function pollChat() {
-  const before = app.msgs?.length ? app.msgs[app.msgs.length - 1].id : 0;
+  const sig = () => (app.msgs || []).map((m) => m.id + ":" + (m.edited_at || "")).join(",");
+  const before = sig();
   await loadMsgs();
-  const after = app.msgs?.length ? app.msgs[app.msgs.length - 1].id : 0;
-  if (after !== before && app.S) {
+  if (sig() !== before && app.S && !(app.tab === "chat" && app.sel.chatEdit)) {
     const draft = document.getElementById("chatmsg")?.value, hadFocus = document.activeElement?.id === "chatmsg";
     const y = window.scrollY; render(); window.scrollTo(0, y);
     const inp = document.getElementById("chatmsg"); if (inp && draft) inp.value = draft; if (inp && hadFocus) inp.focus();
@@ -65,7 +65,7 @@ function tick() {
 }
 async function act(type, payload = {}) {
   if (app.busy) return; app.busy = true;
-  try { await backend.submit(type, payload); await load(); toast("Gespeichert – gilt ab dem nächsten Spieltag."); }
+  try { await backend.submit(type, payload); await load(); toast(type === "rename" ? "Name geändert." : "Gespeichert – gilt ab dem nächsten Spieltag."); }
   catch (e) { toast("Fehler: " + (e.message || e)); }
   finally { app.busy = false; }
 }
@@ -178,6 +178,7 @@ function bindActions(root) {
       if (type === "gfSettings" && el.dataset.key === "budget") payload = { budget: Number(document.getElementById("gfbudget").value) };
       if (type === "gfSettings" && el.dataset.task) payload = { tasks: { [el.dataset.task]: el.checked } };
       if (type === "doctor") payload = { follow: el.checked };
+      if (type === "rename") { const inp = document.getElementById(payload.what === "staff" ? "rn-staff-" + payload.role : "rn-" + payload.id); payload = { ...payload, name: inp?.value || "" }; if (payload.what === "staff") app.sel.staffRn = ""; }
       if (type === "staff") payload = { role: el.dataset.role, lvl: Number(el.value) };
       act(type, payload);
     });
@@ -301,6 +302,7 @@ function vKader() {
     <div class="grid g3" style="gap:4px 16px;margin:8px 0">${E.ATTRS.map((k) => `<div class="row" style="gap:6px"><span class="small" style="width:108px">${E.ATTR_NAMES[k]}</span><span class="bar" style="flex:1"><i style="width:${p.a[k]}%"></i></span><b class="small" style="width:40px;text-align:right">${st(p.a[k])}</b></div>`).join("")}</div>
     <div class="small muted">Stärke auf anderen Positionen: ${E.POSITIONS.filter((x) => x !== p.pos).map((x) => ({ x, v: E.posStrength(p, x) })).sort((a, b) => b.v - a.v).slice(0, 4).map((o) => `${o.x} ${st(o.v)}`).join(" · ")}</div>
     <div class="small muted">Karriere: ${p.c.apps} Spiele, ${p.c.g} Tore, ${p.c.y} Gelb, ${p.c.r} Rot</div>
+    <div class="row" style="margin-top:8px;gap:6px"><input id="rn-${esc(p.id)}" maxlength="40" value="${esc(p.name)}" style="width:200px">${btn("Umbenennen", "rename", { what: "player", id: p.id })}</div>
     <div style="margin-top:6px">${btn("Verkaufen", "sellPlayer", { id: p.id }, "btn sm", `data-confirm="${esc(p.name)} für ${eur(E.valueOf(p) * 0.8)} verkaufen?"`)} ${btn("Entlassen", "releasePlayer", { id: p.id }, "btn sm danger", `data-confirm="${esc(p.name)} entlassen? Abfindung ${eur(p.wage * 0.5)}."`)}</div></div></td></tr>`;
   return `<h2>Kader</h2><p class="sub">${h.players.length} Spieler · Gehälter ${eur(wages)}/Saison · Startelf <b>${st(xi.str)}</b> aktuell / ${st(xi.max)} max · Ø Fitness ${Math.round(avgFit)}${inj ? ` · <span class="crit">${inj} verletzt/krank</span>` : ""}${ban ? ` · <span class="warn">${ban} gesperrt</span>` : ""}</p>
   <div class="card" style="margin-bottom:14px"><div class="grid g2" style="gap:10px">
@@ -366,7 +368,8 @@ function vPersonal() {
     const locked = gfStaff && SPORT_ROLES.includes(role);
     const opts = STAFF_LEVELS.map((n, i) => `<option value="${i}" ${i === lvl ? "selected" : ""}>${i ? `Stufe ${i} · ${R.lv[i - 1][0]} – ${i === 1 ? "Ehrenamt" : eur(staffSalary(role, i, L)) + "/Saison"}` : "unbesetzt"}</option>`).join("");
     return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-start"><div><div class="lvl">${esc(R.area)}</div><h3 style="margin:2px 0">${esc(R.name)}</h3></div><span class="pill">${lvl ? `Stufe ${lvl} · ${STAFF_LEVELS[lvl]}` : "unbesetzt"}</span></div>
-      ${lvl ? `<p style="margin:6px 0 2px"><b>${esc(st0.name)}</b> – „${esc(R.lv[lvl - 1][0])}“</p><p class="small" style="margin:0 0 6px">${esc(R.lv[lvl - 1][1])}</p>` : `<p class="small muted">Die Stelle ist frei.</p>`}
+      ${lvl && app.sel.staffRn === role ? `<div class="row" style="gap:6px;margin:6px 0"><input id="rn-staff-${role}" maxlength="40" value="${esc(st0.name)}" style="width:190px">${btn("Speichern", "rename", { what: "staff", role })}<button class="btn sm" data-sel="staffRn" data-v="">Abbrechen</button></div>` : ""}
+      ${lvl ? `<p style="margin:6px 0 2px"><b>${esc(st0.name)}</b> <button class="btn sm" style="padding:0 6px" data-sel="staffRn" data-v="${role}" title="Namen ändern">✎</button> – „${esc(R.lv[lvl - 1][0])}“</p><p class="small" style="margin:0 0 6px">${esc(R.lv[lvl - 1][1])}</p>` : `<p class="small muted">Die Stelle ist frei.</p>`}
       <p class="small muted" style="margin:0 0 8px">${esc(R.effect)}</p>
       <select data-act="staff" data-role="${role}" ${locked ? "disabled" : ""} data-confirm="Stufe ändern? Bei Abstufung oder Entlassung ab Stufe 2 fallen 30 % Abfindung an.">${opts}</select>${locked ? '<div class="small muted" style="margin-top:4px">Wird vom GF Sport verwaltet.</div>' : ""}
       ${role === "arzt" && lvl ? `<label class="small" style="display:flex;margin-top:8px;gap:8px;align-items:center"><input style="flex:none" type="checkbox" data-act="doctor" ${h.followDoc ? "checked" : ""}> Empfehlungen bei der Aufstellung befolgen</label>` : ""}
@@ -576,7 +579,11 @@ function vChat() {
     ${list.map((m) => { const mine = m.user_id === app.me; const priv = !!m.to_user;
       return `<div style="align-self:${mine ? "flex-end" : "flex-start"};max-width:85%;background:${mine ? "var(--accent-soft)" : "var(--surface2)"};border:1px solid ${priv ? "var(--warn)" : "var(--line)"};border-radius:10px;padding:7px 10px">
         <div class="small muted">${esc(userName(m.user_id))}${priv ? ` → ${esc(m.to_user === app.me ? "dich" : userName(m.to_user))} <span class="pill warn">privat</span>` : ""} · ${fmtT(m.created_at)}</div>
-        <div style="white-space:pre-wrap;word-break:break-word">${esc(m.body)}</div></div>`; }).join("") || '<div class="muted">Noch keine Nachrichten.</div>'}
+        ${app.sel.chatEdit === String(m.id) ? `<textarea id="chatedit" maxlength="1000" rows="3" style="width:100%;min-width:220px">${esc(m.body)}</textarea>
+          <div class="row" style="gap:6px;margin-top:4px"><button class="btn sm pri" data-chat="save" data-id="${m.id}">Speichern</button><button class="btn sm" data-chat="cancel">Abbrechen</button></div>`
+        : `<div style="white-space:pre-wrap;word-break:break-word">${esc(m.body)}</div>`}
+        ${m.edited_at ? '<div class="small muted" style="font-style:italic">bearbeitet</div>' : ""}
+        ${mine && app.sel.chatEdit !== String(m.id) ? `<div class="small" style="text-align:right;margin-top:2px"><a href="#" data-chat="edit" data-id="${m.id}">Bearbeiten</a> · <a href="#" data-chat="del" data-id="${m.id}" style="color:var(--crit)">Löschen</a></div>` : ""}</div>`; }).join("") || '<div class="muted">Noch keine Nachrichten.</div>'}
   </div>
   <div class="card" style="margin-top:10px"><div class="row">
     <select id="chatto"><option value="">An: alle</option>${others.map(([id, n]) => `<option value="${esc(id)}" ${to === id ? "selected" : ""}>An: ${esc(n)} (privat)</option>`).join("")}</select>
@@ -593,6 +600,20 @@ function bindChat(root) {
     catch (e) { toast("Fehler: " + (e.message || e)); }
   };
   root.querySelector("#chatsend")?.addEventListener("click", send);
+  root.querySelectorAll("[data-chat]").forEach((el) => el.addEventListener("click", async (e) => {
+    e.preventDefault();
+    const what = el.dataset.chat, id = Number(el.dataset.id);
+    try {
+      if (what === "edit") { app.sel.chatEdit = el.dataset.id; render(); setTimeout(() => { const t = document.getElementById("chatedit"); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 0); return; }
+      if (what === "cancel") { app.sel.chatEdit = null; render(); return; }
+      if (what === "save") {
+        const body = document.getElementById("chatedit").value.trim(); if (!body) { toast("Leere Nachricht – zum Entfernen bitte „Löschen“ nutzen."); return; }
+        await backend.editMessage(id, body); app.sel.chatEdit = null;
+      }
+      if (what === "del") { if (!confirm("Nachricht endgültig löschen?")) return; await backend.deleteMessage(id); }
+      await loadMsgs(); const y = window.scrollY; render(); window.scrollTo(0, y);
+    } catch (err) { toast("Fehler: " + (err.message || err)); }
+  }));
   root.querySelector("#chatmsg")?.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
   root.querySelector("#chatto")?.addEventListener("change", (e) => { app.sel.chatTo = e.target.value; });
 }
