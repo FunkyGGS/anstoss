@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221226";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221226";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221226";
+import * as E from "./engine.js?v=202611221252";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221252";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221252";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -178,6 +178,7 @@ function bindActions(root) {
       if (type === "gfSettings" && el.dataset.key === "budget") payload = { budget: Number(document.getElementById("gfbudget").value) };
       if (type === "gfSettings" && el.dataset.task) payload = { tasks: { [el.dataset.task]: el.checked } };
       if (type === "doctor") payload = { follow: el.checked };
+      if (type === "ticketAuto") payload = { on: el.checked };
       if (type === "lineup" && el.type === "checkbox") payload = { comp: el.dataset.comp || "pokal", same: !el.checked };
       if (type === "rename") { const inp = document.getElementById(payload.what === "staff" ? "rn-staff-" + payload.role : "rn-" + payload.id); payload = { ...payload, name: inp?.value || "" }; if (payload.what === "staff") app.sel.staffRn = ""; }
       if (type === "staff") payload = { role: el.dataset.role, lvl: Number(el.value) };
@@ -266,6 +267,11 @@ function vHome() {
   if (c.h.cash < 0) todo.push("Das Vereinskonto ist im Minus. Spieler verkaufen oder Kosten senken.");
   const injN = c.h.players.filter((p) => p.inj).length; const tired = c.h.players.filter((p) => !p.inj && p.fit < 50).length;
   if (injN) todo.push(`${injN} Spieler verletzt oder krank – siehe Kader.`);
+  if (t.status === "active") {
+    const L = Math.min(t.level, 11), sec = c.h.sec ?? 5, pos = posOf(t);
+    if (sec < E.SEC_REQ[L]) todo.push(`Security zu schwach für die eigene Liga (Stufe ${E.SEC_REQ[L]} nötig) – im Verein erhöhen.`);
+    else if (L > 1 && sec < E.SEC_REQ[L - 1]) todo.push(`${pos && pos <= 3 ? "Achtung, Aufstiegsplatz! " : ""}Für einen Aufstieg in die ${E.LV[L - 1].name} braucht der Verein Security-Stufe ${E.SEC_REQ[L - 1]} (aktuell ${sec}) – sonst gibt es keine Lizenz.`);
+  }
   const awayP = c.h.players.filter((p) => p.away);
   if (awayP.length) todo.push(`Heute fehlen: ${awayP.map((p) => `${p.name} (${p.away.n})`).join(", ")}.`);
   const expN = c.h.players.filter((p) => p.ct && p.ct.until <= S().season && !p.retiring).length;
@@ -333,6 +339,17 @@ function vKader() {
 
 
 const natTag = (p) => p.nat && p.nat !== "GER" ? ` <span class="muted small" title="${esc(E.NAT_NAMES[p.nat] || p.nat)}">${p.nat}</span>` : "";
+function kasseTip(c) {
+  const h = c.h, a = E.kasseAdvice(S(), c);
+  if (!a) return '<p class="small muted">Kein Kassenwart – niemand rechnet nach, ob die Preise passen.</p>';
+  const L = Math.min(E.firstTeam(S(), c).level, 11), price = (f) => (E.LV[L].price * f).toFixed(2) + " €";
+  const dirTxt = a.dir === "up" ? "rauf" : a.dir === "down" ? "runter" : "passt so";
+  const who = `${esc(h.staff.kasse.name)} (${esc(ROLES.kasse.lv[a.lvl - 1][0])})`;
+  const txt = a.lvl === 1 ? `„Ich würd' sagen: ${dirTxt}! Und das Bier könnte auch 50 Cent mehr kosten.“`
+    : a.lvl === 2 ? (a.dir === "ok" ? "„Die Preise passen ungefähr.“" : `„Die Preise sollten eher ${a.dir === "up" ? "höher" : "niedriger"} sein.“`)
+    : `Empfehlung: <b>${Math.round(a.f * 100)} %</b> (${price(a.f)})${a.lvl >= 4 ? ` · erwartete Einnahmen je Heimspiel ca. ${eur(a.opt.rev * (a.f === a.opt.f ? 1 : 0.98))} (aktuell ${eur(a.opt.cur)})` : ""}`;
+  return `<p class="small" style="margin:6px 0">${who}: ${txt}</p>`;
+}
 // ------------------------------------------------------------ Form & Verträge
 function formIcon(f = 0) { const [i, col] = f >= 0.5 ? ["⬆", "var(--ok)"] : f >= 0.15 ? ["↗", "var(--ok)"] : f > -0.15 ? ["→", "var(--muted)"] : f > -0.5 ? ["↘", "var(--warn)"] : ["⬇", "var(--crit)"]; return `<span title="${E.formLabel(f)}" style="color:${col};font-weight:700">${i}</span>`; }
 function ctPanel(p, mode, h) {
@@ -448,6 +465,7 @@ function vPersonal() {
       ${lvl ? `<p style="margin:6px 0 2px"><b>${esc(st0.name)}</b> <button class="btn sm" style="padding:0 6px" data-sel="staffRn" data-v="${role}" title="Namen ändern">✎</button> – „${esc(R.lv[lvl - 1][0])}“</p><p class="small" style="margin:0 0 6px">${esc(R.lv[lvl - 1][1])}</p>` : `<p class="small muted">Die Stelle ist frei.</p>`}
       <p class="small muted" style="margin:0 0 8px">${esc(R.effect)}</p>
       <select data-act="staff" data-role="${role}" ${locked ? "disabled" : ""} data-confirm="Stufe ändern? Bei Abstufung oder Entlassung ab Stufe 2 fallen 30 % Abfindung an.">${opts}</select>${locked ? '<div class="small muted" style="margin-top:4px">Wird vom GF Sport verwaltet.</div>' : ""}
+      ${role === "kasse" && lvl ? `${kasseTip(c)}<label class="small" style="display:flex;margin-top:4px;gap:8px;align-items:center"><input style="flex:none" type="checkbox" data-act="ticketAuto" ${h.ticketAuto ? "checked" : ""}> Eintrittspreise vom Kassenwart festlegen lassen</label>` : ""}
       ${role === "arzt" && lvl ? `<label class="small" style="display:flex;margin-top:8px;gap:8px;align-items:center"><input style="flex:none" type="checkbox" data-act="doctor" ${h.followDoc ? "checked" : ""}> Empfehlungen bei der Aufstellung befolgen</label>` : ""}
       ${role === "gf" && lvl ? `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px"><div class="row"><label class="muted small" style="width:120px">Budget / Saison</label><input id="gfbudget" type="number" min="0" step="1000" value="${h.gf.budget}" style="width:130px"> ${btn("Speichern", "gfSettings", {}, "btn sm", 'data-key="budget"')}</div>
         <p class="small muted" style="margin:6px 0">Personal Sport aktuell: ${eur(sportCost)}/Saison${h.gf.tasks.squad ? ` · Transfers diese Saison: ${eur(h.gf.spent || 0)} von ${eur(h.gf.budget * 0.3)}` : ""}</p>
@@ -481,8 +499,14 @@ function vVerein() {
     : `<p class="muted small">Noch kein Vertrag – bis dahin zahlen nur Kleinsponsoren (35 % des Ligaüblichen).</p>
     <div class="scroll"><table><thead><tr><th>Angebot</th><th>Typ</th><th class="r">Grundbetrag</th><th class="r">Siegprämie</th><th></th></tr></thead><tbody>
     ${h.offers.map((o) => `<tr><td>${esc(o.name)}</td><td>${o.typ}</td><td class="r">${eur(o.base)}</td><td class="r">${eur(o.win)}</td><td>${btn("Unterschreiben", "sponsor", { id: o.id }, "btn sm pri")}</td></tr>`).join("")}</tbody></table></div>`}
-    <h3 style="margin-top:16px">Eintrittspreise</h3><div class="row"><select data-act="ticket" data-key="factor">${[0.6, 0.8, 1, 1.2, 1.4, 1.7, 2].map((f) => `<option value="${f}" ${Math.abs(f - ticketF) < 0.01 ? "selected" : ""}>${Math.round(f * 100)} % – ${(E.LV[L].price * f).toFixed(2)} €</option>`).join("")}</select>
-    <span class="small muted">Höhere Preise bringen mehr pro Fan, aber weniger Zuschauer.</span></div></div>
+    <h3 style="margin-top:16px">Eintrittspreise</h3><div class="row"><select data-act="ticket" data-key="factor">${Array.from({ length: 31 }, (_, i) => Math.round((0.5 + i * 0.05) * 100) / 100).map((f) => `<option value="${f}" ${Math.abs(f - ticketF) < 0.01 ? "selected" : ""}>${Math.round(f * 100)} % – ${(E.LV[L].price * f).toFixed(2)} €</option>`).join("")}</select>
+    <span class="small muted">Höhere Preise bringen mehr pro Fan, aber weniger Zuschauer – und weniger Umsatz am Catering.</span></div>
+    ${kasseTip(c)}${E.sl(h, "kasse") ? `<label class="small" style="display:flex;gap:8px;align-items:center"><input style="flex:none" type="checkbox" data-act="ticketAuto" ${h.ticketAuto ? "checked" : ""}> Kassenwart legt die Preise fest${h.ticketAuto ? " (aktiv – eine manuelle Änderung beendet das)" : ""}</label>` : ""}</div>
+  <div class="card"><h3>Catering</h3>${venueList("catering", E.CATERING, h.cat ?? 2, (i) => `+${E.CAT_EUR[i].toFixed(2).replace(".", ",")} € je Zuschauer · Betrieb ${eur(E.CAT_UPKEEP[i])}/Saison${i > (h.cat ?? 2) ? ` · Ausbau ${eur(E.CAT_BUILD.slice((h.cat ?? 2) + 1, i + 1).reduce((a, b) => a + b, 0))}` : ""}`)}
+    <p class="small muted">Besseres Catering bringt mehr Umsatz je Zuschauer und lockt ein paar Fans mehr an – lohnt sich aber erst, wenn genug Leute kommen. Abbauen kostet nichts.</p></div>
+  <div class="card"><h3>Security</h3>${venueList("security", E.SECURITY, h.sec ?? 1, (i) => `${eur(E.SEC_COST[i])}/Saison · bis ${E.SEC_CAP[i] === Infinity ? "unbegrenzt" : E.SEC_CAP[i].toLocaleString("de-DE")} Zuschauer · Lizenz bis ${secLicense(i)}`)}
+    <p class="small muted">Für jede Spielklasse gilt eine Mindeststufe (Lizenz). Fehlt sie, bleibt der Verein trotz Meisterschaft in seiner Liga. Kommen mehr Zuschauer als der Dienst betreuen kann, verhängt der Verband Ordnungsstrafen.
+    Aktuell nötig: Stufe ${E.SEC_REQ[L]} · für den Aufstieg${L > 1 ? ` in die ${esc(E.LV[L - 1].name)}: Stufe ${E.SEC_REQ[L - 1]}` : ": –"}.</p></div>
   <div class="card"><h3>Weitere Mannschaften</h3><p class="small muted">Zweit- und Drittmannschaften werden nicht verwaltet, nur ihre Kosten fließen in den Jahresabschluss. Neue Mannschaften starten zur nächsten Saison${t.kreis ? " in der untersten Spielklasse" : " außerhalb der simulierten Ligen"}.</p>
     <div class="scroll"><table><thead><tr><th>Team</th><th>Status</th><th class="r">Kosten/Saison</th><th></th></tr></thead><tbody>${reserves}
     <tr><td>Jugendteams</td><td class="small">abhängig von der Jugendakademie</td><td class="r">${eur(E.youthCost(S(), c))}</td><td></td></tr></tbody></table></div></div>
@@ -491,6 +515,12 @@ function vVerein() {
   </div>`;
 }
 
+function secLicense(i) { const lv = Object.keys(E.SEC_REQ).map(Number).filter((L) => L <= 11 && E.SEC_REQ[L] <= i); return lv.length ? E.LV[Math.min(...lv)].name : "–"; }
+function venueList(act, list, cur, info) {
+  return list.map(([n, d], i) => `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)${i === cur ? ";background:var(--accent-soft)" : ""}">
+    <div style="flex:1"><b>${i}. ${esc(n)}</b>${i === cur ? ' <span class="pill">aktuell</span>' : ""}<div class="small">${esc(d)}</div><div class="small muted">${info(i)}</div></div>
+    <div>${i === cur ? "" : btn(i > cur ? "Wählen" : "Wechseln", act, { lvl: i }, "btn sm", `data-confirm="${esc(n)} wählen?"`)}</div></div>`).join("");
+}
 // ------------------------------------------------------------ Finanzen
 function vFinanzen() {
   const c = myClub(), h = c.h;

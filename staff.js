@@ -144,6 +144,16 @@ export const ROLES = {
       ["Der Logistikkönig", "Charterflug, Ersatztrikots in drei Größen, Rasenschuhe für jeden Untergrund. Nichts geht schief. Wirklich nichts."],
     ],
   },
+  kasse: {
+    name: "Kassenwart", area: "Wirtschaft", w: 0.6, effect: "Gibt Tipps für die Eintrittspreise und senkt die Verwaltungskosten. Auf Wunsch legt er die Preise selbst fest – je höher die Stufe, desto näher am optimalen Erlös.",
+    lv: [
+      ["Der Schuhkarton-Buchhalter", "Führt die Vereinskasse in einem Schuhkarton, Belege stehen auf Bierdeckeln. Seine Preistipps kommen aus dem Bauch – meistens aus dem vollen."],
+      ["Der Sparkassen-Rentner", "40 Jahre am Schalter, zählt das Wechselgeld dreimal und weiß immerhin, ob der Eintritt eher rauf oder runter muss."],
+      ["Die Steuerfachangestellte", "Excel mit Farbcode, Belege im Ordner, Kassenprüfung ohne Schweißausbrüche. Ihre Preisvorschläge liegen meist nah dran."],
+      ["Der Controller", "Liquiditätsplanung, Zuschauerprognosen, Deckungsbeiträge. Rechnet aus, was der Stehplatz wirklich wert ist."],
+      ["Die Finanzchefin mit Revenue-Management", "Dynamische Preise nach Gegner, Tabellenplatz und Wetterbericht. Kein Euro bleibt auf der Tribüne liegen."],
+    ],
+  },
   marketing: {
     name: "Marketing", area: "Wirtschaft", w: 1, effect: "Bessere Sponsorenangebote und höhere Einnahmen aus Werbung.",
     lv: [
@@ -165,7 +175,7 @@ export const ROLES = {
     ],
   },
 };
-export const ROLE_ORDER = ["praesident", "gf", "headcoach", "cotrainer", "taktik", "athletik", "twtrainer", "scout", "nlz", "arzt", "physio", "reha", "psycho", "betreuer", "marketing", "presse"];
+export const ROLE_ORDER = ["praesident", "gf", "headcoach", "cotrainer", "taktik", "athletik", "twtrainer", "scout", "nlz", "arzt", "physio", "reha", "psycho", "betreuer", "kasse", "marketing", "presse"];
 export const GF_TASKS = {
   staff: ["Sportliches Personal verwalten", "Stellt sportliche Mitarbeiter ein, entlässt sie und legt ihre Stufen innerhalb des Budgets fest."],
   squad: ["Kader auffüllen", "Kauft Spieler nach, wenn Positionen fehlen oder zu viele ausfallen – je nach Stufe mit mehr oder weniger Treffsicherheit."],

@@ -2,9 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221226";
-import { pickNat, natName, NATS } from "./names.js?v=202611221226";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221226";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221252";
+import { pickNat, natName, NATS } from "./names.js?v=202611221252";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221252";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -46,6 +46,38 @@ export const LV = {
   11: { name: "3. Kreisklasse", top: 6.5, bot: 3, tv: 0, sponsor: 1500, att: 25, price: 0, cap: 300, fixed: 1200, match: 25, prize: 80, value: 6e3, fac: 0 },
 };
 export const levelMid = (l) => (LV[l].top + LV[l].bot) / 2;
+// ---------------------------------------------------------------- Catering & Security
+export const CATERING = [
+  ["kein Angebot", "Wer Durst hat, bringt sich was mit."],
+  ["Bratwurststand", "Der Vorsitzende grillt persönlich, Senf aus dem Eimer, Bier aus dem Kasten. Kult, aber überschaubar."],
+  ["Vereinsheim-Theke", "Frisch gezapftes Bier, Kuchen von den Spielerfrauen und Pommes aus der Fritteuse im Vereinsheim."],
+  ["Imbisswagen & Bierstand", "Mehrere Stände, Kartenzahlung, Currywurst mit Pommes und ein Bierwagen hinter dem Tor."],
+  ["Gastro-Partner", "Ein Caterer betreibt mehrere Kioske, dazu Fanartikel-Shop und ein kleiner Sponsorenbereich."],
+  ["Professionelle Konzession", "Stadion-Catering mit Großkonzession, VIP-Logen, Hospitality-Pakete und eigener Bierpartner."],
+];
+export const CAT_EUR = [0, 1, 2.5, 4.5, 7, 11];            // Erlös je Zuschauer
+export const CAT_BUILD = [0, 500, 5000, 30000, 150000, 800000];
+export const CAT_UPKEEP = [0, 0, 1500, 8000, 40000, 200000];
+export const SECURITY = [
+  ["keine Ordner", "Jeder kommt, wie er will."],
+  ["Türsteher aus der Dorfdisco", "Zwei breite Kerle vom „Tanzpalast Krone“, die jeden beim Vornamen kennen. Reicht für den Kreis."],
+  ["Ordnerdienst aus dem Verein", "Zehn Ehrenamtliche mit Warnwesten und Funkgerät. Genug für Bezirks- und Landesliga."],
+  ["Lokale Sicherheitsfirma", "Geschulte Ordner, Einlasskontrolle und Sanitäter vor Ort – Oberliga-tauglich."],
+  ["Ordnungsdienst mit Sicherheitskonzept", "Fantrennung, Videoüberwachung, Abstimmung mit der Polizei – wie es die Regionalliga verlangt."],
+  ["Professionelles Sicherheitsunternehmen", "Hunderte Ordner, Stadionverbote, Sicherheitsbeauftragter und Polizeiabsprachen – Pflicht in den Profiligen."],
+];
+export const SEC_REQ = { 1: 5, 2: 5, 3: 5, 4: 4, 5: 3, 6: 2, 7: 2, 8: 1, 9: 1, 10: 1, 11: 1, 12: 1 };   // Mindeststufe je Spielklasse (Lizenz)
+export const SEC_COST = [0, 300, 3000, 25000, 150000, 900000];                 // je Saison
+export const SEC_CAP = [0, 300, 1500, 6000, 20000, Infinity];                   // Zuschauer, die ohne Probleme betreut werden
+const catDefault = (L) => (L <= 2 ? 5 : L <= 3 ? 4 : L <= 4 ? 3 : L <= 6 ? 2 : 1);
+export function ensureVenue(S, c) {
+  const h = c.h; if (!h) return;
+  const L = Math.min(firstTeam(S, c).level || 11, 11);
+  if (h.cat == null) h.cat = catDefault(L);
+  if (h.sec == null) h.sec = SEC_REQ[L];
+  if (h.ticketAuto == null) h.ticketAuto = false;
+}
+export const licensedFor = (S, t, L) => { const c = S.clubs.get(t.clubId); return !c?.h || (c.h.sec ?? 5) >= SEC_REQ[Math.min(L, 12)]; };
 // ---------------------------------------------------------------- Verträge
 export const CT_KINDS = { fest: "Festgehalt", mix: "Ausgewogen", flex: "Leistung" };
 const CT_SPLIT = { fest: [1, 0], mix: [0.7, 0.38], flex: [0.4, 0.75] };   // Anteil fix, erwarteter Prämienanteil (bezogen auf Forderung)
@@ -325,10 +357,11 @@ export function normalize(S, rank, standard, forcedIn = new Map()) {
         const gr = S.groups.get(g); if (gr.level <= L) return false;
         const t = S.teams.get(id); if (t.home[L] !== G.id) return false;
         if (t.rank > 1 && clubFirstLevel(t) >= L) return false;
+        if (!licensedFor(S, t, L)) return false;
         return gr.level === L + 1 || !hasGroupAt(S, t, L + 1);
       }).map(([id]) => id).sort(bestFirst);
       const pool = [...assign.entries()].filter(([id, g]) => g === "pool:" + G.id && !justRelegated.has(id))
-        .map(([id]) => id).filter((id) => { const t = S.teams.get(id); return !(t.rank > 1 && clubFirstLevel(t) >= L); })
+        .map(([id]) => id).filter((id) => { const t = S.teams.get(id); return !(t.rank > 1 && clubFirstLevel(t) >= L) && licensedFor(S, t, L); })
         .sort((a, b) => (S.teams.get(b).str - S.teams.get(a).str) || (a < b ? -1 : 1));
       return real.concat(pool);
     };
@@ -522,7 +555,8 @@ function euroFinance(S, m, r) {
     if (home && !m.neutral) {
       const att = Math.round(Math.min(LV[L].cap * (1 + 0.15 * h.fac.umfeld), attendance(S, c, t, tm(S, oid), true) * 1.4));
       ledger(h, "in", "Zuschauer", att * LV[L].price * h.ticket * 1.6);
-      ledger(h, "in", "Catering & Fanartikel", att * (1 + 0.4 * h.fac.umfeld) * 7);
+      ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * 1.3 * (1 + 0.1 * h.fac.umfeld));
+      secCheck(S, c, att);
       ledger(h, "out", "Spielbetrieb", LV[L].match * 1.2);
       h.lastAtt = att;
     } else ledger(h, "out", "Reisekosten Europa", LV[L].match * 0.9);
@@ -1032,8 +1066,9 @@ function takeOver(S, c, userId, cash) {
   };
   for (const tid of c.teams.slice(1)) c.h.reserves[S.teams.get(tid).rank] = { team: tid, active: true };
   const base = L <= 2 ? 4 : L <= 4 ? 3 : L <= 6 ? 2 : 1;
-  const def = { praesident: base, gf: 0, headcoach: base, cotrainer: base - 1, taktik: base - 1, athletik: base - 1, twtrainer: base - 1, scout: base - 1, nlz: base - 1, arzt: base - 1, physio: base - 1, reha: base - 2, psycho: base - 2, betreuer: Math.max(1, base - 1), marketing: base - 1, presse: base - 1 };
-  for (const r of ROLE_ORDER) setStaff(c, r, Math.max(0, def[r]));
+  const def = { praesident: base, gf: 0, headcoach: base, cotrainer: base - 1, taktik: base - 1, athletik: base - 1, twtrainer: base - 1, scout: base - 1, nlz: base - 1, arzt: base - 1, physio: base - 1, reha: base - 2, psycho: base - 2, betreuer: Math.max(1, base - 1), kasse: Math.max(1, base - 1), marketing: base - 1, presse: base - 1 };
+  for (const r of ROLE_ORDER) setStaff(c, r, Math.max(0, def[r] || 0));
+  ensureVenue(S, c);
   seasonStartHuman(S, c, true);
 }
 
@@ -1243,7 +1278,8 @@ export function applyAction(S, a, userName, daySeed) {
       c.h = { cash: 50000, players: [], trainer: null, fac: { jugend: 0, training: 0, umfeld: 0 }, formation: "4-4-2", tactic: "normal", ticket: 1,
         sponsor: null, offers: [], reserves: {}, popularity: 0.8, ledger: newLedger(), annual: [], youthSeq: 0, trainers: [],
         intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [], hires: 0, staff: {}, gf: { budget: 0, tasks: { staff: false, squad: false, rotation: false }, spent: 0 }, followDoc: false };
-      for (const r of ["praesident", "headcoach", "betreuer"]) setStaff(c, r, 1);
+      for (const r of ["praesident", "headcoach", "betreuer", "kasse"]) setStaff(c, r, 1);
+      c.h.cat = 1; c.h.sec = 1; c.h.ticketAuto = false;
       FOUND_PLAN.forEach((pos, i) => c.h.players.push(genPlayer(rng, pos, LV[11].bot * (0.75 + rng() * 0.5), 17 + Math.floor(rng() * 16), "h" + id, i, { level: 11 })));
       seasonStartHuman(S, c, true);
       news(S, `Neugründung: ${name} (${kreis === "RH" ? "Region Hannover" : "Hameln-Pyrmont"}) startet zur nächsten Saison in der untersten Spielklasse.`);
@@ -1326,8 +1362,35 @@ export function applyAction(S, a, userName, daySeed) {
       }
       return true;
     }
+    case "catering": {
+      if (!h) return fail("Kein Verein.");
+      ensureVenue(S, club);
+      const lvl = clamp(Math.round(Number(P.lvl)) || 0, 0, 5);
+      if (lvl > h.cat) {
+        const cost = CAT_BUILD.slice(h.cat + 1, lvl + 1).reduce((a, b) => a + b, 0);
+        if (h.cash < cost) return fail("Nicht genug Geld auf dem Vereinskonto.");
+        ledger(h, "out", "Investitionen", cost);
+      }
+      h.cat = lvl;
+      userNews(S, a.user_id, `Catering: ${CATERING[lvl][0]}.`);
+      return true;
+    }
+    case "security": {
+      if (!h) return fail("Kein Verein.");
+      ensureVenue(S, club);
+      h.sec = clamp(Math.round(Number(P.lvl)) || 0, 0, 5);
+      userNews(S, a.user_id, `Sicherheitsdienst: ${SECURITY[h.sec][0]}.`);
+      return true;
+    }
+    case "ticketAuto": {
+      if (!h) return fail("Kein Verein.");
+      if (P.on && !sl(h, "kasse")) return fail("Ohne Kassenwart kann niemand die Preise übernehmen.");
+      h.ticketAuto = !!P.on;
+      return true;
+    }
     case "ticket": {
       if (!h) return fail("Kein Verein.");
+      if (h.ticketAuto) h.ticketAuto = false;
       h.ticket = clamp(Number(P.factor) || 1, 0.5, 2);
       return true;
     }
@@ -1551,13 +1614,40 @@ function cupPrize(S, tid, cup, ri) {
   if (v) ledger(c.h, "in", "Pokalprämien", v);
 }
 
+function secCheck(S, c, att) {
+  const h = c.h, cap = SEC_CAP[h.sec ?? 5];
+  if (att <= cap) return;
+  const fine = eur((att - cap) * 3);
+  ledger(h, "out", "Strafen & Auflagen", fine);
+  userNews(S, c.owner, `Ordnungsstrafe: ${att} Zuschauer, aber der Sicherheitsdienst ist nur für ${cap} ausgelegt. Der Verband kassiert ${fmt(fine)}.`);
+}
+export function ticketOptimum(S, c) {
+  const h = c.h, t = firstTeam(S, c), L = Math.min(t.level, 11), save = h.ticket || 1;
+  const rev = (f) => { h.ticket = f; const att = attendance(S, c, t, null, false); return att * (LV[L].price * f + CAT_EUR[h.cat ?? 2] * (1 + 0.1 * h.fac.umfeld)); };
+  let best = 1, bv = -1;
+  for (let f = 0.5; f <= 2.0001; f += 0.05) { const v = rev(r2(f)); if (v > bv + 1e-9) { bv = v; best = r2(f); } }
+  const cur = rev(save);
+  h.ticket = save;
+  return { f: best, rev: eur(bv), cur: eur(cur) };
+}
+// Tipp des Kassenwarts: Genauigkeit je Stufe (Stufe 5 exakt)
+export function kasseAdvice(S, c) {
+  const h = c.h, lvl = sl(h, "kasse");
+  if (!lvl) return null;
+  const o = ticketOptimum(S, c);
+  const noise = [0, 0.45, 0.25, 0.12, 0.05, 0][lvl];
+  const rr = rngFrom("kasse", c.id, S.season, Math.floor((S.day || 0) / 5));
+  const f = r2(clamp(Math.round((o.f * (1 + (rr() - 0.5) * 2 * noise)) * 20) / 20, 0.5, 2));
+  const cur = h.ticket || 1;
+  return { lvl, f, opt: o, dir: f > cur + 0.02 ? "up" : f < cur - 0.02 ? "down" : "ok" };
+}
 function attendance(S, c, t, opp, cup) {
   const h = c.h; const L = Math.min(t.level, 11);
   const lg = t.league ? S.leagues.get(t.league) : null;
   let posRatio = 0.5;
   if (lg) { const sorted = sortedTable(lg); const i = sorted.findIndex((x) => x.id === t.id); posRatio = sorted.length > 1 ? i / (sorted.length - 1) : 0.5; }
   const oppF = opp ? clamp(1 + (L - opp.level) * 0.25, 0.7, 3) : 1;
-  let att = LV[L].att * h.popularity * (1 + 0.06 * h.fac.umfeld) * (1 + 0.05 * sl(h, "presse")) * (1 + 0.01 * sl(h, "praesident")) * (1.25 - 0.5 * posRatio) * oppF * Math.pow(h.ticket, -0.8) * (cup ? 1.3 : 1);
+  let att = LV[L].att * h.popularity * (1 + 0.06 * h.fac.umfeld) * (1 + 0.05 * sl(h, "presse")) * (1 + 0.01 * sl(h, "praesident")) * (1.25 - 0.5 * posRatio) * oppF * Math.exp(-0.6 * (h.ticket - 1)) * (cup ? 1.3 : 1) * (1 + 0.02 * ((h.cat ?? 2) - 2));
   const cap = LV[L].cap * (1 + 0.15 * h.fac.umfeld);
   return Math.round(clamp(att, 10, cap));
 }
@@ -1572,7 +1662,8 @@ function matchFinance(S, hid, aid, r, level, isCup, cup) {
       const price = LV[L].price * h.ticket;
       let ticket = att * price; if (isCup) ticket *= 0.5;
       ledger(h, "in", "Zuschauer", ticket);
-      ledger(h, "in", "Catering & Fanartikel", att * (1 + 0.4 * h.fac.umfeld) * (L <= 3 ? 6 : L <= 6 ? 2.5 : 1.2));
+      ledger(h, "in", "Catering & Fanartikel", att * CAT_EUR[h.cat ?? 2] * (1 + 0.1 * h.fac.umfeld));
+      secCheck(S, c, att);
       ledger(h, "out", "Spielbetrieb", LV[L].match);
       h.lastAtt = att;
     } else ledger(h, "out", "Spielbetrieb", LV[L].match * 0.4);
@@ -1613,7 +1704,11 @@ function humanDaily(S, c, daySeed) {
   ledger(h, "out", "Gehälter Spieler", h.players.reduce((s, p) => s + p.wage, 0) * per);
   ledger(h, "out", "Gehälter Personal", staffCost(h, L) * per);
   gfDaily(S, c, daySeed);
-  ledger(h, "out", "Verwaltung & Platz", LV[L].fixed * per);
+  ensureVenue(S, c);
+  ledger(h, "out", "Verwaltung & Platz", LV[L].fixed * per * (1 - 0.02 * sl(h, "kasse")));
+  if (CAT_UPKEEP[h.cat]) ledger(h, "out", "Catering (Betrieb)", CAT_UPKEEP[h.cat] * per);
+  if (SEC_COST[h.sec]) ledger(h, "out", "Sicherheitsdienst", SEC_COST[h.sec] * per);
+  if (h.ticketAuto && sl(h, "kasse")) { const adv = kasseAdvice(S, c); if (adv) h.ticket = adv.f; }
   ledger(h, "out", "Unterhalt Anlagen", (h.facInvest || 0) * 0.08 * per);
   ledger(h, "out", "Jugendabteilung", youthCost(S, c) * per);
   for (const rk of [2, 3]) if (h.reserves[rk]?.active) ledger(h, "out", rk + ". Mannschaft", reserveCost(S, c, rk) * per);
@@ -1824,6 +1919,8 @@ function seasonEnd(S, daySeed) {
   for (const t of S.teams.values()) {
     const b = before.get(t.id); if (b == null || t.status !== "active") continue;
     const c = S.clubs.get(t.clubId);
+    if (c?.owner && t.rank === 1 && b === t.level && b > 1 && (rank.get(t.id)?.pos ?? 99) <= 1 && !licensedFor(S, t, b - 1))
+      userNews(S, c.owner, `Lizenz verweigert: ${t.name} hätte aufsteigen können, aber für die ${LV[b - 1].name} ist Sicherheitsstufe ${SEC_REQ[b - 1]} nötig. Der Verein bleibt in der ${S.leagues.get(t.league).name}.`);
     if (c?.owner && t.rank === 1 && b !== t.level && b <= 11) userNews(S, c.owner, t.level < b ? `Aufstieg! ${t.name} spielt jetzt in der ${S.leagues.get(t.league).name}.` : `Abstieg: ${t.name} spielt jetzt in der ${S.leagues.get(t.league).name}.`);
   }
   // Menschliche Vereine: Altern, Jugend, Verträge
