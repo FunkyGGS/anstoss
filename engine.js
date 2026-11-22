@@ -2,9 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221341";
-import { pickNat, natName, NATS } from "./names.js?v=202611221341";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221341";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221343";
+import { pickNat, natName, NATS } from "./names.js?v=202611221343";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221343";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -119,6 +119,62 @@ function loanDaily(S, c, daySeed) {
     p.form = r2(clamp((p.form || 0) * 0.9 + 0.05, -1, 1));
   }
   ledger(h, "out", "Gehälter Spieler", wage / MATCHDAYS);
+}
+
+
+// ---------------------------------------------------------------- Zufriedenheit, Kapitän, Teamchemie, Mannschaftsrat
+export const MOOD_LABEL = (m = 60) => (m >= 80 ? "begeistert" : m >= 62 ? "zufrieden" : m >= 45 ? "geht so" : m >= 30 ? "unzufrieden" : "will weg");
+export function squadRoles(h) {
+  const sorted = h.players.filter((p) => !p.loan || true).slice().sort((a, b) => b.max - a.max);
+  const role = new Map(); sorted.forEach((p, i) => role.set(p.id, i < 11 ? "Stammspieler" : i < 17 ? "Ergänzung" : "Perspektive"));
+  return role;
+}
+function moodDaily(S, c, daySeed, playedDay, result) {
+  const h = c.h; const role = squadRoles(h);
+  const cap = h.players.find((p) => p.id === h.captain);
+  let unhappy = 0;
+  for (const p of h.players) {
+    if (p.mood == null) p.mood = 62 + (hash32("mood:" + p.id) % 10);
+    let d = 0.03 * (60 - p.mood); const why = [];
+    const r = role.get(p.id), avail = !p.inj && !p.away && !(p.ban > 0);
+    if (playedDay && avail) {
+      if (r === "Stammspieler") { if (p.played) d += 0.6; else { d -= 1.6; why.push("zu wenig Einsatzzeit"); } }
+      else if (r === "Ergänzung") { if (p.played) d += 1; else d -= 0.4; }
+      else if (p.played) d += 1.2; else if (p.age >= 21) d -= 0.25;
+    }
+    if (result > 0) d += 0.5; else if (result < 0) d -= 0.5;
+    if (p.ct && !p.loan && p.wage < 0.75 * contractDemand(p, 1)) { d -= 0.3; why.push("Gehalt"); }
+    if (p.ct && !p.loan && p.ct.until <= S.season && S.day >= 20) { d -= 0.3; why.push("Vertragszukunft"); }
+    if (p.id === h.captain) { d += 0.2; if (playedDay && avail && !p.played) { d -= 1; why.push("Kapitän auf der Bank"); } }
+    p.mood = r2(clamp(p.mood + d, 0, 100));
+    if (why.length) p.moodWhy = why[0];
+    if (p.mood < 30) {
+      unhappy++;
+      if (!p.wantsOut) { p.wantsOut = true; userNews(S, c.owner, `${p.name} ist unzufrieden (${p.moodWhy || "Stimmung"}) und will den Verein verlassen.`); }
+    } else if (p.mood > 45) p.wantsOut = false;
+    if (p.mood < 45 && p.moodWhy === "Gehalt" && p.askedRaise !== S.season) { p.askedRaise = S.season; userNews(S, c.owner, `${p.name} fordert mehr Gehalt – eine Vertragsverlängerung würde ihn besänftigen.`); }
+  }
+  // Teamchemie: Ziel je nach Kapitän, Bewegung durch Ergebnisse und Stimmung
+  const target = 55 + (cap ? cap.a.men * 0.3 : 0);
+  h.chem = r2(clamp((h.chem ?? 60) + 0.05 * (target - (h.chem ?? 60)) + (result > 0 ? 0.5 : result < 0 ? -0.3 : 0) - 0.3 * unhappy, 20, 100));
+  // Mannschaftsrat fordert Prämien
+  if (h.request && h.request.until < (S.gday || 0)) { answerRequest(S, c, false); }
+  const t = firstTeam(S, c), lg = t.league ? S.leagues.get(t.league) : null;
+  if (!h.request && lg && S.day === 22 && h.reqSeason !== S.season) {
+    const pos = sortedTable(lg).findIndex((x) => x.id === t.id) + 1;
+    if (pos > 0 && pos <= 3) {
+      const wages = h.players.reduce((a, p) => a + p.wage, 0);
+      h.request = { amount: eur(wages * 0.12), reason: `Platz ${pos} – der Mannschaftsrat will eine Aufstiegs- bzw. Titelprämie`, until: (S.gday || 0) + 3 };
+      h.reqSeason = S.season;
+      userNews(S, c.owner, `Mannschaftsrat: Die Spieler fordern ${fmt(h.request.amount)} Prämie für den Saisonendspurt. Antwort auf der Übersicht.`);
+    }
+  }
+}
+function answerRequest(S, c, yes) {
+  const h = c.h, r = h.request; if (!r) return;
+  h.request = null;
+  if (yes) { ledger(h, "out", "Prämien Spieler", r.amount); for (const p of h.players) moodAdd(p, 8); h.chem = clamp((h.chem ?? 60) + 5, 20, 100); userNews(S, c.owner, `Prämie zugesagt – die Kabine feiert.`); }
+  else { for (const p of h.players) moodAdd(p, -6); h.chem = clamp((h.chem ?? 60) - 6, 20, 100); userNews(S, c.owner, `Prämie verweigert – im Mannschaftsrat brodelt es.`); }
 }
 
 // ---------------------------------------------------------------- Catering & Security
@@ -924,7 +980,7 @@ export function posStrength(p, pos) {
   return s;
 }
 export const FORM_AMP = 0.08;
-export const curStrength = (p, pos) => posStrength(p, pos || p.pos) * fitFactor(p.fit ?? 100) * (1 + FORM_AMP * (p.form || 0));
+export const curStrength = (p, pos) => posStrength(p, pos || p.pos) * fitFactor(p.fit ?? 100) * (1 + FORM_AMP * (p.form || 0)) * (1 + 0.03 * (((p.mood ?? 60) - 60) / 40));
 // Formschwankung: je höher die mentale Stärke, desto ruhiger die Form
 export const formSwing = (p) => 0.55 - 0.42 * ((p.a?.men ?? 50) / 100);
 export function formLabel(f = 0) { return f >= 0.5 ? "Topform" : f >= 0.15 ? "gut" : f > -0.15 ? "normal" : f > -0.5 ? "schwach" : "Formtief"; }
@@ -1011,6 +1067,7 @@ export function humanXI(S, c, comp = "liga") {
   const base = xi.reduce((s2, x) => s2 + x.eff, 0) / 11;
   const maxStr = xi.reduce((s2, x) => s2 + x.max, 0) / 11;
   let str = base * (1 + INT_PERF[U.intensity - 1]);
+  str *= 1 + 0.04 * (((h.chem ?? 60) - 60) / 40);
   str *= 1 + HC_B[sl(h, "headcoach")] + 0.004 * sl(h, "taktik") + 0.003 * sl(h, "psycho") + 0.002 * sl(h, "betreuer") + 0.003 * sl(h, "praesident");
   const xp = xi.filter((x) => x.p);
   const avgA = (k) => xp.length ? xp.reduce((s2, x) => s2 + x.p.a[k], 0) / xp.length : 0;
@@ -1771,9 +1828,24 @@ export function applyAction(S, a, userName, daySeed) {
       S.freeAgents.push({ ...p, id: "fa:" + a.id });
       return true;
     }
+    case "captain": {
+      if (!h) return fail("Kein Verein.");
+      const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
+      const old = h.players.find((x) => x.id === h.captain);
+      if (old && old !== p) moodAdd(old, -10);
+      h.captain = p.id; moodAdd(p, 10);
+      userNews(S, a.user_id, `${p.name} ist neuer Kapitän.`);
+      return true;
+    }
+    case "request": {
+      if (!h?.request) return fail("Keine offene Forderung.");
+      answerRequest(S, club, !!P.accept);
+      return true;
+    }
     case "contract": {
       if (!h) return fail("Kein Verein.");
       const p = h.players.find((x) => x.id === P.id); if (!p) return fail("Spieler nicht gefunden.");
+      if ((p.mood ?? 60) < 30) return fail(`${p.name} ist zu unzufrieden und will nicht verlängern.`);
       ensureContract(S, p);
       const yrs = clamp(Math.round(Number(P.years)) || 1, 1, 5);
       if (p.age >= 33 && yrs > 2) return fail(`${p.name} unterschreibt in seinem Alter höchstens 2 Jahre.`);
@@ -1783,6 +1855,7 @@ export function applyAction(S, a, userName, daySeed) {
       const until = Math.max(p.ct.until, S.season - 1 + (S.day > 17 ? 1 : 0)) + yrs;
       setContract(p, off, until);
       if (P.clause) p.ct.clause = eur(valueOf(p) * 1.6);
+      moodAdd(p, off.base >= p.wage ? 12 : 4); p.wantsOut = false;
       userNews(S, a.user_id, `${p.name} verlängert bis Saison ${until} (${CT_KINDS[off.kind]}, ${fmt(off.base)} fix pro Saison).`);
       return true;
     }
@@ -2022,6 +2095,14 @@ function humanDaily(S, c, daySeed) {
     if (exp.length) userNews(S, c.owner, `Verträge laufen zum Saisonende aus: ${exp.map((p) => p.name).join(", ")}. Verlängern im Kader.`);
   }
   if (S.day === 25) retirementCheck(S, c, daySeed);
+  {
+    const t0 = firstTeam(S, c);
+    const playedDay = h.players.some((p) => p.played);
+    let res = 0;
+    const lg0 = t0.league ? S.leagues.get(t0.league) : null; const fx0 = lg0?.fixtures?.[S.day]?.find((m) => m.h === t0.id || m.a === t0.id);
+    if (fx0 && fx0.gh != null) { const gf = fx0.h === t0.id ? fx0.gh : fx0.ga, ga = fx0.h === t0.id ? fx0.ga : fx0.gh; res = Math.sign(gf - ga); }
+    moodDaily(S, c, daySeed, playedDay, res);
+  }
   absences(S, c, daySeed);
   incomingOffers(S, c, daySeed);
   loanDaily(S, c, daySeed);
