@@ -1,6 +1,6 @@
-import * as E from "./engine.js?v=202611221223";
-import { backend, MODE, kickoff } from "./backend.js?v=202611221223";
-import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221223";
+import * as E from "./engine.js?v=202611221226";
+import { backend, MODE, kickoff } from "./backend.js?v=202611221226";
+import { ROLES, ROLE_ORDER, SPORT_ROLES, STAFF_LEVELS, GF_TASKS, staffSalary } from "./staff.js?v=202611221226";
 
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -266,6 +266,8 @@ function vHome() {
   if (c.h.cash < 0) todo.push("Das Vereinskonto ist im Minus. Spieler verkaufen oder Kosten senken.");
   const injN = c.h.players.filter((p) => p.inj).length; const tired = c.h.players.filter((p) => !p.inj && p.fit < 50).length;
   if (injN) todo.push(`${injN} Spieler verletzt oder krank – siehe Kader.`);
+  const awayP = c.h.players.filter((p) => p.away);
+  if (awayP.length) todo.push(`Heute fehlen: ${awayP.map((p) => `${p.name} (${p.away.n})`).join(", ")}.`);
   const expN = c.h.players.filter((p) => p.ct && p.ct.until <= S().season && !p.retiring).length;
   if (expN && S().day >= 15) todo.push(`${expN} Verträge laufen zum Saisonende aus – im Kader verlängern (Sortierung „Vertrag“).`);
   if (tired > 6) todo.push(`${tired} Spieler sind müde (Fitness unter 50). Intensität senken oder rotieren.`);
@@ -286,6 +288,7 @@ function fitBar(f) { const col = f >= 75 ? "var(--ok)" : f >= 50 ? "var(--warn)"
 function statusOf(p) {
   if (p.inj) return `<span class="pill crit">${esc(p.inj.n)} · ${p.inj.days} T</span>`;
   if (p.ban > 0) return `<span class="pill warn">gesperrt · ${p.ban}</span>`;
+  if (p.away) return `<span class="pill" title="Fehlt: ${esc(p.away.n)}">fehlt · ${esc(p.away.n)}${p.away.days > 1 ? " · " + p.away.days + " T" : ""}</span>`;
   if (p.fit <= 0) return `<span class="pill crit">nicht spielfit</span>`;
   return "";
 }
@@ -360,8 +363,8 @@ function vAufstellung() {
   const locked = comp !== "liga" && U.same;
   const sel = (key, opts, cur) => `<select data-act="lineup" data-key="${key}" data-p='${esc(JSON.stringify({ comp }))}' ${locked ? "disabled" : ""}>${opts.map(([v, n]) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${n}</option>`).join("")}</select>`;
   const slots = E.FORMATIONS[U.formation] || E.FORMATIONS["4-4-2"];
-  const avail = (p) => !p.inj && !(p.ban > 0) && p.fit > 0;
-  const tag = (p) => p.inj ? ` – ${p.inj.n}` : p.ban > 0 ? " – gesperrt" : p.fit <= 0 ? " – nicht spielfit" : "";
+  const avail = (p) => !p.inj && !(p.ban > 0) && !p.away && p.fit > 0;
+  const tag = (p) => p.inj ? ` – ${p.inj.n}` : p.ban > 0 ? " – gesperrt" : p.away ? ` – fehlt (${p.away.n})` : p.fit <= 0 ? " – nicht spielfit" : "";
   const rows = slots.map((pos, i) => {
     const cur = X.xi[i]; const want = U.manual[i] || "";
     const wantP = want ? h.players.find((p) => p.id === want) : null;

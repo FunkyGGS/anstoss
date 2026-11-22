@@ -2,9 +2,9 @@
 // Alle Mitspieler berechnen aus denselben Daten (Welt + Tages-Seeds + Aktionen) denselben Spielstand.
 // Keine Math.random-Aufrufe: alle Zufallszahlen kommen aus Seeds.
 
-import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221223";
-import { pickNat, natName, NATS } from "./names.js?v=202611221223";
-import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221223";
+import { UEFA_CLUBS, UEFA_COUNTRIES, UEFA_QUOTA, UEFA_COMPS, GER_SEASON1 } from "./euro.js?v=202611221226";
+import { pickNat, natName, NATS } from "./names.js?v=202611221226";
+import { ROLES, SPORT_ROLES, ROLE_ORDER, staffSalary } from "./staff.js?v=202611221226";
 export const SEASON_DAYS = 35;          // 34 Spieltage + 1 Tag Saisonumbruch
 export const MATCHDAYS = 34;
 export const LEAGUE_SIZE = 18;
@@ -808,7 +808,7 @@ export function humanXI(S, c, comp = "liga") {
   const slots = FORMATIONS[U.formation] || FORMATIONS["4-4-2"];
   const minFit = U.minFit;
   const docOn = h.followDoc && sl(h, "arzt") > 0;
-  const ready = h.players.filter((p) => !p.inj && !(p.ban > 0) && p.fit > 0 && !(docOn && p.fit < DOC_REST[sl(h, "arzt")]));
+  const ready = h.players.filter((p) => !p.inj && !(p.ban > 0) && !p.away && p.fit > 0 && !(docOn && p.fit < DOC_REST[sl(h, "arzt")]));
   const used = new Set(), xi = [];
   // fest eingeplante Spieler zuerst (sofern einsatzfähig)
   const readyIds = new Set(ready.map((p) => p.id));
@@ -1637,6 +1637,7 @@ function humanDaily(S, c, daySeed) {
     if (exp.length) userNews(S, c.owner, `Verträge laufen zum Saisonende aus: ${exp.map((p) => p.name).join(", ")}. Verlängern im Kader.`);
   }
   if (S.day === 25) retirementCheck(S, c, daySeed);
+  absences(S, c, daySeed);
   for (const p of h.players) {
     if (p.inj) {
       p.fit = 0;
@@ -1663,6 +1664,47 @@ function humanDaily(S, c, daySeed) {
     if (p.age < 31) { const ath = sl(h, "athletik"), psy = sl(h, "psycho"); if (ath) { p.a.spd = r2(clamp(p.a.spd * (1 + 0.0004 * ath), 0.5, 99.99)); p.a.fit = r2(clamp(p.a.fit * (1 + 0.0004 * ath), 0.5, 99.99)); } if (psy) p.a.men = r2(clamp(p.a.men * (1 + 0.0004 * psy), 0.5, 99.99)); }
     refreshPlayer(p);
   }
+}
+// Amateurfußball: Spieler fehlen aus privaten Gründen (Bezirksliga sehr selten … Kreisklassen gelegentlich)
+// [Grund, Gewicht, Tage min, Tage max, Monate (leer = ganzjährig)]
+export const ABSENCES = [
+  ["muss arbeiten (Spätschicht)", 14, 1, 1], ["Kind krank", 10, 1, 1], ["Konfirmation der Tochter", 6, 1, 1, [4, 5]], ["Kommunion des Sohnes", 4, 1, 1, [4, 5]],
+  ["Geburt seines Kindes", 3, 2, 4], ["Hochzeit eines Kumpels", 5, 1, 1, [5, 6, 7, 8, 9]], ["Polterabend", 3, 1, 1, [4, 5, 6, 7, 8, 9]],
+  ["Urlaub auf Mallorca", 6, 7, 12, [6, 7, 8]], ["Herbsturlaub mit der Familie", 4, 5, 9, [10]], ["Skiurlaub in Tirol", 4, 6, 9, [1, 2, 3]],
+  ["Junggesellenabschied in Hamburg", 3, 1, 2, [4, 5, 6, 7, 8, 9]], ["90. Geburtstag der Oma", 3, 1, 1], ["Umzug", 3, 1, 1],
+  ["Montage in Norwegen", 3, 4, 9], ["Schützenfest (ist Thronanwärter)", 4, 1, 2, [6, 7, 8]], ["Erntezeit auf dem Hof", 4, 2, 5, [7, 8, 9]],
+  ["Klausurenphase an der Uni", 4, 1, 3, [1, 2, 6, 7]], ["Elternabend", 3, 1, 1], ["Einsatz bei der Freiwilligen Feuerwehr", 3, 1, 1],
+  ["Auto springt nicht an", 4, 1, 1], ["Weihnachtsfeier der Firma", 4, 1, 1, [12]], ["Karneval/Fasching", 4, 1, 1, [2]],
+  ["Schwiegereltern zu Besuch", 4, 1, 1], ["renoviert das Bad", 3, 1, 2], ["Dauerkarte – Heimspiel des Lieblingsvereins", 4, 1, 1],
+  ["Familienfeier", 5, 1, 1], ["Taufe des Patenkinds", 3, 1, 1], ["Nachtdienst im Krankenhaus", 3, 1, 1], ["hat verschlafen", 3, 1, 1],
+  ["Fortbildung beim Arbeitgeber", 3, 1, 2], ["Geburtstag der Freundin", 4, 1, 1], ["Ostern bei der Familie", 3, 1, 2, [3, 4]],
+];
+const ABSENCE_P = { 7: 0.004, 8: 0.012, 9: 0.022, 10: 0.03, 11: 0.04, 12: 0.04 };
+export function gameMonth(S, offset = 0) {
+  if (!S.startDate) return null;
+  const [y, m, d] = S.startDate.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + (S.gday || 1) - 1 + offset)).getUTCMonth() + 1;
+}
+function absences(S, c, daySeed) {
+  const h = c.h, L = firstTeam(S, c).level;
+  for (const p of h.players) if (p.away && --p.away.days <= 0) p.away = null;
+  const base = ABSENCE_P[Math.min(L, 12)] || 0;
+  if (!base) return;
+  const mon = gameMonth(S, 1);
+  const list = ABSENCES.filter((a) => !a[4] || (mon && a[4].includes(mon)));
+  const rng = rngFrom(daySeed, "away", c.id);
+  const out = [];
+  for (const p of h.players) {
+    if (p.inj || p.away) continue;
+    if (rng() < base * (1 - 0.05 * sl(h, "betreuer")) * (p.age >= 27 && p.age <= 40 ? 1.2 : 0.85)) {
+      const tot = list.reduce((a, b) => a + b[1], 0); let x = rng() * tot, r = list[0];
+      for (const a of list) { x -= a[1]; if (x <= 0) { r = a; break; } }
+      const days = r[2] + Math.floor(rng() * (r[3] - r[2] + 1));
+      p.away = { n: r[0], days };
+      out.push(`${p.name} (${r[0]}${days > 1 ? `, ${days} Spieltage` : ""})`);
+    }
+  }
+  if (out.length) userNews(S, c.owner, `Absagen für den nächsten Spieltag: ${out.join("; ")}.`);
 }
 function monthFactor(S) {
   if (!S.startDate) return 1;
