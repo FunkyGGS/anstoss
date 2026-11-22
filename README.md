@@ -50,6 +50,10 @@ Link und Einladungscode schicken. Jeder legt mit E-Mail und Passwort ein Konto a
 - **Pokale:** Kreispokal → Bezirkspokal Hannover → 21 Landespokale → DFB-Pokal. Der Sieger spielt in der nächsten Saison zusätzlich im nächsthöheren Pokal.
 - **Fairness:** Die Ergebnisse eines Tages hängen von einem geheimen Zufallswert ab, den der Server erst um 18:00 Uhr freigibt. Niemand kann vorher ausrechnen, wie ein Spiel ausgeht.
 
+- **Spieler:** 10 Positionen (TW, IV, AV, DM, ZM, AM, OM, AS, ST, MS) und 11 Fähigkeiten (0–100), die je Position unterschiedlich gewichtet in die Maximalstärke eingehen. Die aktuelle Stärke hängt vom Fitnessstand (0 = nicht spielfit, 100 = topfit) ab.
+- **Fitness & Verletzungen:** Einsätze kosten Fitness (abhängig von der Intensität in 5 Stufen und der Fitness-Fähigkeit), Pausen bauen sie auf. Das Verletzungsrisiko steigt mit Müdigkeit, Intensität, Alter und der Härte des Gegners; Krankheiten häufen sich im Winter und stecken an. Ausfälle dauern je nach Art realistisch lange.
+- **Aggressivität (5 Stufen):** mehr gewonnene Zweikämpfe, aber mehr Karten und Sperren (5 Gelbe = 1 Spiel, Gelb-Rot = 1, Rot = 2).
+- **Statistik:** Spielberichte mit Ballbesitz, Schüssen, Fouls, Karten und Torschützen, Saisonstatistik, Saisonhistorie, ewige Torschützenliste des eigenen Vereins je Wettbewerb, Torschützenliste jeder Liga und Abschlusstabellen aller vergangenen Saisons.
 - **Chat:** Nachrichten an alle oder privat an einzelne Mitspieler (Tabelle `messages`, siehe `supabase_chat.sql`).
 - **Erfolge:** Trophäenschrank je Verein (Meisterschaften aller Ligen, alle Pokale) und Bestenliste der Bundesliga mit Torjägerliste, Meistern, Torschützenkönigen, Rekorden und ewiger Tabelle.
 

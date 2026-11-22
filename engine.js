@@ -49,11 +49,30 @@ const DOWN = { 1: 2, 2: 2, 3: 4, 4: 3, 5: 2, 6: 2, 7: 2, 8: 2, 9: 2, 10: 2, 11: 
 export const wageOf = (s) => eur(60 * Math.pow(1.135, s));
 export function valueOf(p) {
   const f = p.age < 22 ? 3.2 : p.age < 25 ? 2.7 : p.age < 29 ? 2.1 : p.age < 32 ? 1.3 : 0.7;
-  const potBonus = 1 + Math.max(0, (p.pot || p.str) - p.str) / 40;
-  return eur(wageOf(p.str) * f * potBonus);
+  const st = p.max ?? p.str;
+  const potBonus = 1 + Math.max(0, (p.pot || st) - st) / 40;
+  return eur(wageOf(st) * f * potBonus);
 }
 
-export const FORMATIONS = { "4-4-2": [4, 4, 2], "4-3-3": [4, 3, 3], "3-5-2": [3, 5, 2], "4-5-1": [4, 5, 1], "5-3-2": [5, 3, 2] };
+export const FORMATIONS = {
+  "4-4-2": ["TW", "AV", "IV", "IV", "AV", "AM", "DM", "ZM", "AM", "ST", "MS"],
+  "4-3-3": ["TW", "AV", "IV", "IV", "AV", "DM", "ZM", "OM", "AS", "MS", "AS"],
+  "4-2-3-1": ["TW", "AV", "IV", "IV", "AV", "DM", "DM", "AS", "OM", "AS", "MS"],
+  "3-5-2": ["TW", "IV", "IV", "IV", "AM", "DM", "ZM", "OM", "AM", "ST", "MS"],
+  "5-3-2": ["TW", "AV", "IV", "IV", "IV", "AV", "DM", "ZM", "ZM", "ST", "MS"],
+  "4-5-1": ["TW", "AV", "IV", "IV", "AV", "AM", "DM", "ZM", "OM", "AM", "MS"],
+};
+export const INTENSITY = ["locker", "leicht", "normal", "hoch", "maximal"];
+export const AGGRESSION = ["passiv", "zurückhaltend", "normal", "robust", "sehr aggressiv"];
+const INT_DRAIN = [5, 7, 9, 12, 15];         // Fitnessverbrauch pro Einsatz
+const INT_REC = [15, 13, 12, 11, 10];         // Erholung pro Tag (nach Einsatz die Hälfte)
+const INT_RISK = [0.6, 0.8, 1, 1.3, 1.7];    // Verletzungsrisiko
+const INT_PERF = [-0.05, -0.025, 0, 0.025, 0.05];
+const INT_GROW = [0.6, 0.8, 1, 1.2, 1.4];
+const AGG_CARD = [0.45, 0.7, 1, 1.45, 2.1];
+const AGG_HURT = [0.8, 0.9, 1, 1.2, 1.5];    // Verletzungsrisiko für den Gegner
+export const fitFactor = (f) => 0.5 + 0.5 * clamp(f, 0, 100) / 100;
+const AI_FIT = 0.85;  // KI-Teams spielen im Schnitt mit Fitnessstand 70
 export const TACTICS = { defensiv: [0.85, 0.82], normal: [1, 1], offensiv: [1.14, 1.1] };
 
 // Pokale: Spieltage (es werden die letzten n Termine für n Runden genutzt)
@@ -123,7 +142,7 @@ export function createState(world, seasonSeed1) {
     season: 1, day: 0, teams: new Map(), clubs: new Map(), leagues: new Map(), groups: new Map(),
     pools: new Map(), cups: [], users: new Map(), news: [], history: [], taken: new Set(), freeAgents: [],
     seasonSeed: seasonSeed1, cupWinners: {}, prevThird: [], lastTables: new Map(), nextId: 1,
-    trophies: new Map(), eternal: new Map(), scorers: new Map(), squadCache: new Map(), records: { maxPts: null, bigWin: null, maxGoals: null },
+    trophies: new Map(), eternal: new Map(), lscorers: new Map(), squadCache: new Map(), archive: [], startDate: null, records: { maxPts: null, bigWin: null, maxGoals: null },
   };
   for (const l of world.leagues) {
     S.leagues.set(l.id, { id: l.id, name: l.name, level: l.level, group: l.group, teams: [] });
@@ -379,7 +398,8 @@ function roundRobin(ids, rng) {
 }
 
 export function startSeason(S) {
-  S.scorers = new Map(); S.squadCache = new Map();
+  S.lscorers = new Map(); S.squadCache = new Map();
+  for (const c of S.clubs.values()) if (c.h) { c.h.tstats = {}; for (const p of c.h.players) { p.s = newStats(); } }
   for (const lg of S.leagues.values()) {
     const rng = seasonRng(S, "sched", lg.id);
     const rounds = roundRobin(lg.teams, rng);
@@ -476,58 +496,239 @@ function drawRound(S, cup, ri, rng) {
   cup.rounds[ri] = { day: cup.days[ri], matches, byes: [...byeSet] };
 }
 
+// ---------------------------------------------------------------- Spieler
+export const ATTRS = ["fit", "spd", "tec", "pas", "zwk", "kop", "dri", "vis", "tak", "abs", "men"];
+export const ATTR_NAMES = { fit: "Fitness", spd: "Speed", tec: "Technik", pas: "Passspiel", zwk: "Zweikampf", kop: "Kopfball", dri: "Dribbling", vis: "Vision", tak: "Taktik", abs: "Abschluss", men: "Mentale Stärke" };
+export const POSITIONS = ["TW", "IV", "AV", "DM", "ZM", "AM", "OM", "AS", "ST", "MS"];
+export const POS_NAMES = { TW: "Torwart", IV: "Innenverteidiger", AV: "Außenverteidiger", DM: "Defensives Mittelfeld", ZM: "Zentrales Mittelfeld", AM: "Außenmittelfeld", OM: "Offensives Mittelfeld", AS: "Außenstürmer", ST: "Hängende Spitze", MS: "Mittelstürmer" };
+export const POS_WEIGHTS = {
+  TW: { tak: 0.25, men: 0.25, spd: 0.15, kop: 0.15, pas: 0.1, zwk: 0.05, fit: 0.05 },
+  IV: { zwk: 0.25, kop: 0.2, tak: 0.15, spd: 0.1, men: 0.1, pas: 0.08, fit: 0.07, tec: 0.05 },
+  AV: { spd: 0.18, zwk: 0.17, fit: 0.13, pas: 0.12, tak: 0.1, tec: 0.08, dri: 0.07, men: 0.07, kop: 0.04, vis: 0.04 },
+  DM: { zwk: 0.2, tak: 0.18, pas: 0.15, fit: 0.1, men: 0.1, vis: 0.08, tec: 0.07, kop: 0.06, spd: 0.06 },
+  ZM: { pas: 0.2, vis: 0.15, tec: 0.13, tak: 0.12, fit: 0.1, zwk: 0.08, men: 0.08, dri: 0.06, abs: 0.05, spd: 0.03 },
+  AM: { spd: 0.18, dri: 0.15, pas: 0.13, fit: 0.12, tec: 0.12, vis: 0.08, abs: 0.07, zwk: 0.06, men: 0.05, tak: 0.04 },
+  OM: { vis: 0.2, tec: 0.17, pas: 0.15, dri: 0.13, abs: 0.12, tak: 0.08, men: 0.08, spd: 0.07 },
+  AS: { spd: 0.2, dri: 0.2, abs: 0.15, tec: 0.15, fit: 0.08, pas: 0.08, vis: 0.07, men: 0.07 },
+  ST: { abs: 0.22, tec: 0.15, dri: 0.13, spd: 0.12, vis: 0.1, men: 0.1, pas: 0.1, kop: 0.08 },
+  MS: { abs: 0.3, kop: 0.18, men: 0.12, spd: 0.1, tec: 0.1, zwk: 0.08, dri: 0.06, fit: 0.06 },
+};
+const POS_GROUP = { TW: "T", IV: "D", AV: "D", DM: "M", ZM: "M", AM: "M", OM: "O", AS: "O", ST: "O", MS: "O" };
+const SCORE_W = { TW: 0, IV: 0.25, AV: 0.2, DM: 0.35, ZM: 0.7, AM: 1, OM: 1.6, AS: 2.4, ST: 3.2, MS: 4.2 };
+const CARD_W = { TW: 0.3, IV: 1.5, AV: 1.2, DM: 1.6, ZM: 1, AM: 0.8, OM: 0.7, AS: 0.6, ST: 0.7, MS: 0.8 };
+export function posStrength(p, pos) {
+  const w = POS_WEIGHTS[pos]; let s = 0;
+  for (const k in w) s += w[k] * (p.a?.[k] ?? 0);
+  if (pos !== p.pos) {
+    if (pos === "TW" || p.pos === "TW") s *= 0.5;
+    else s *= POS_GROUP[pos] === POS_GROUP[p.pos] ? 0.96 : 0.86;
+  }
+  return s;
+}
+export const curStrength = (p, pos) => posStrength(p, pos || p.pos) * fitFactor(p.fit ?? 100);
+function makeAttrs(rng, pos, target) {
+  const w = POS_WEIGHTS[pos]; const mx = Math.max(...Object.values(w));
+  const a = {};
+  for (const k of ATTRS) a[k] = target * (0.72 + 0.42 * ((w[k] || 0) / mx)) * (0.88 + 0.24 * rng());
+  const o = Object.entries(w).reduce((s2, [k, v]) => s2 + v * a[k], 0) || 1;
+  const f = target / o;
+  for (const k of ATTRS) a[k] = r2(clamp(a[k] * f, 0.5, 99.99));
+  return a;
+}
+const newStats = () => ({ apps: 0, g: 0, y: 0, r: 0 });
+function genPlayer(rng, pos, str, age, idPrefix, i) {
+  str = clamp(str, 0.5, 99.99);
+  const p = { id: idPrefix + ":" + i, name: nameFrom(rng), pos, age, a: makeAttrs(rng, pos, str), fit: 100, inj: null, ban: 0, s: newStats(), c: newStats() };
+  p.max = r2(posStrength(p, pos));
+  p.pot = r2(clamp(p.max * (age < 21 ? 1.25 + rng() * 0.35 : age < 25 ? 1.08 + rng() * 0.2 : 1 + rng() * 0.05), p.max, 99.99));
+  p.wage = wageOf(p.max);
+  return p;
+}
+function refreshPlayer(p) { p.max = r2(posStrength(p, p.pos)); }
+const POS_PLAN = ["TW", "TW", "IV", "IV", "IV", "IV", "AV", "AV", "AV", "DM", "DM", "ZM", "ZM", "AM", "AM", "OM", "OM", "AS", "AS", "ST", "MS", "MS"];
+const AI_STARTERS = new Set([0, 2, 3, 6, 7, 9, 11, 13, 14, 19, 20]);
+const FOUND_PLAN = ["TW", "TW", "IV", "IV", "IV", "AV", "AV", "DM", "ZM", "ZM", "AM", "AM", "OM", "AS", "AS", "ST", "MS", "MS"];
+export function aiSquad(S, t) {
+  const key = t.id + ":" + S.season;
+  if (S.squadCache?.has(key)) return S.squadCache.get(key).filter((p) => !S.taken.has(p.id));
+  const rng = rngFrom(S.seasonSeed, S.season, "squad", t.id);
+  const out = [];
+  POS_PLAN.forEach((pos, i) => {
+    let m = AI_STARTERS.has(i) ? 0.94 + rng() * 0.12 : 0.74 + rng() * 0.2;
+    if (rng() < 0.012 && t.level <= 2) m *= 1.07;
+    const age = 18 + Math.floor(rng() * 17);
+    out.push(genPlayer(rng, pos, t.str * m, age, t.id + ":" + S.season, i));
+  });
+  S.squadCache?.set(key, out);
+  return out.filter((p) => !S.taken.has(p.id));
+}
+
+// Startelf: verfügbare Spieler (nicht verletzt/gesperrt) nach aktueller Stärke auf die Positionen der Formation
+export function humanXI(S, c) {
+  const h = c.h;
+  const slots = FORMATIONS[h.formation] || FORMATIONS["4-4-2"];
+  const minFit = h.minFit ?? 60;
+  const ready = h.players.filter((p) => !p.inj && !(p.ban > 0) && p.fit > 0);
+  const used = new Set(), xi = [];
+  const order = slots.map((pos, i) => ({ pos, i })).sort((a, b) => (a.pos === "TW" ? -1 : b.pos === "TW" ? 1 : 0));
+  for (const { pos, i } of order) {
+    let best = null, bv = -1, bk = -1;
+    for (const p of ready) {
+      if (used.has(p.id)) continue;
+      const v = curStrength(p, pos), k = p.fit >= minFit ? 1 : 0;   // ausgeruhte Spieler zuerst
+      if (k > bk || (k === bk && (v > bv || (v === bv && p.id < best.id)))) { bk = k; bv = v; best = p; }
+    }
+    if (best) { used.add(best.id); xi[i] = { slot: pos, p: best, eff: bv, max: posStrength(best, pos) }; }
+    else xi[i] = { slot: pos, p: null, eff: 0.5, max: 0.5 };
+  }
+  const missing = xi.filter((x) => !x.p).length;
+  const base = xi.reduce((s2, x) => s2 + x.eff, 0) / 11;
+  const maxStr = xi.reduce((s2, x) => s2 + x.max, 0) / 11;
+  let str = base * (1 + INT_PERF[(h.intensity || 3) - 1]);
+  if (h.trainer) str *= 1 + clamp((h.trainer.q / Math.max(1, base) - 1) * 0.03, -0.04, 0.04);
+  const xp = xi.filter((x) => x.p);
+  const avgA = (k) => xp.length ? xp.reduce((s2, x) => s2 + x.p.a[k], 0) / xp.length : 0;
+  return { str: r2(str), max: r2(maxStr), xi, missing, zwk: avgA("zwk"), disc: (avgA("tak") + avgA("men")) / 2, ovr: xp.length ? xp.reduce((s2, x) => s2 + x.p.max, 0) / xp.length : 1 };
+}
+
 // ---------------------------------------------------------------- Spiel
 export function teamStrength(S, t) {
   const c = S.clubs.get(t.clubId);
   if (t.rank === 1 && c && c.h) return humanXI(S, c).str;
-  return t.str;
+  return r2(t.str * AI_FIT);
 }
+function sideInfo(S, tid) {
+  const t = S.teams.get(tid); const c = S.clubs.get(t.clubId);
+  if (t.rank === 1 && c?.h) {
+    const X = humanXI(S, c);
+    return { t, c, human: true, X, str: X.str, tac: TACTICS[c.h.tactic] || TACTICS.normal, tacName: c.h.tactic, agg: c.h.aggression || 3, players: X.xi.filter((x) => x.p).map((x) => ({ p: x.p, slot: x.slot })) };
+  }
+  const getPool = () => {
+    const key = "pool:" + t.id + ":" + S.season;
+    let pool = S.squadCache.get(key);
+    if (!pool) { pool = aiSquad(S, t).sort((a, b) => b.max - a.max).slice(0, 14).map((p) => ({ p, slot: p.pos, w: SCORE_W[p.pos] * Math.pow((p.a.abs + p.a.kop * 0.3) / 100, 2) })); S.squadCache.set(key, pool); }
+    return pool;
+  };
+  return { t, c, human: false, str: r2(t.str * AI_FIT), tac: TACTICS.normal, tacName: "normal", agg: 3, get players() { return getPool(); } };
+}
+function pickWeighted(rng, list, wf) {
+  const w = list.map(wf); const tot = w.reduce((a, b) => a + b, 0); if (!tot) return null;
+  let x = rng() * tot;
+  for (let i = 0; i < list.length; i++) { x -= w[i]; if (x <= 0) return list[i]; }
+  return list[list.length - 1];
+}
+// Spielt eine Partie inklusive Karten, Torschützen und Statistik
 function playMatch(S, h, a, rng, neutral = false) {
-  const th = S.teams.get(h), ta = S.teams.get(a);
-  let sh = teamStrength(S, th) * (1 - (th.fatigue || 0)), sa = teamStrength(S, ta) * (1 - (ta.fatigue || 0));
-  const ch = S.clubs.get(th.clubId), ca = S.clubs.get(ta.clubId);
-  const tacH = th.rank === 1 && ch?.h ? TACTICS[ch.h.tactic] : TACTICS.normal;
-  const tacA = ta.rank === 1 && ca?.h ? TACTICS[ca.h.tactic] : TACTICS.normal;
-  const rel = ((sh - sa) / Math.max(1, (sh + sa) / 2)) * 100 + (neutral ? 0 : 6);
-  const f = (x) => clamp(x <= -60 ? 0.08 : Math.pow(1 + x / 60, 2), 0.08, 4.5);
-  let lh = r4(1.35 * f(rel) * tacH[0] * tacA[1] * (0.85 + 0.3 * rng()));
-  let la = r4(1.1 * f(-rel) * tacA[0] * tacH[1] * (0.85 + 0.3 * rng()));
-  const goals = (l) => { let g = 0; const p = Math.min(0.85, l / 10); for (let i = 0; i < 10; i++) if (rng() < p) g++; return g; };
-  return { gh: goals(lh), ga: goals(la), lh, la, rel };
-}
-
-// ---------------------------------------------------------------- Menschliche Vereine
-function genPlayer(rng, pos, str, age, idPrefix, i) {
-  const pot = r2(clamp(str * (age < 21 ? 1.25 + rng() * 0.35 : age < 25 ? 1.08 + rng() * 0.2 : 1 + rng() * 0.05), str, 99.99));
-  return { id: idPrefix + ":" + i, name: nameFrom(rng), pos, age, str: r2(clamp(str, 0.5, 99.99)), pot, wage: wageOf(str) };
-}
-const POS_PLAN = ["TW", "TW", "AB", "AB", "AB", "AB", "AB", "AB", "AB", "MF", "MF", "MF", "MF", "MF", "MF", "MF", "ST", "ST", "ST", "ST", "ST", "MF"];
-export function aiSquad(S, t) {
-  const rng = rngFrom(S.seasonSeed, S.season, "squad", t.id);
-  const out = [];
-  POS_PLAN.forEach((pos, i) => {
-    const starter = i === 0 || (i >= 2 && i <= 5) || (i >= 9 && i <= 12) || (i >= 16 && i <= 17);
-    let m = starter ? 0.94 + rng() * 0.12 : 0.74 + rng() * 0.2;
-    if (rng() < 0.012 && t.level <= 2) m *= 1.07;
-    const age = 18 + Math.floor(rng() * 17);
-    const p = genPlayer(rng, pos, t.str * m, age, t.id + ":" + S.season, i);
-    if (!S.taken.has(p.id)) out.push(p);
+  const H = sideInfo(S, h), A = sideInfo(S, a);
+  const sides = [H, A];
+  const st = { p: [50, 50], s: [0, 0], o: [0, 0], f: [0, 0], y: [0, 0], r: [0, 0], g: [], c: [] };
+  // Karten
+  for (let k = 0; k < 2; k++) {
+    const X = sides[k];
+    let cardMod = 1;
+    if (X.human && X.X.ovr) cardMod = clamp(1.25 - 0.3 * (X.X.disc / X.X.ovr), 0.75, 1.3);
+    const ag = AGG_CARD[X.agg - 1] * cardMod;
+    const pl = X.human ? X.players : null;
+    for (let i = 0; i < 11; i++) {
+      const who = pl ? pl[i] : null;
+      const wpos = who ? CARD_W[who.slot] : 1;
+      if (rng() < 0.11 * ag * wpos) {
+        const min = 1 + Math.floor(rng() * 90);
+        if (rng() < 0.05 * ag) { st.r[k]++; st.c.push([min, k, who?.p.name || null, "GR", who?.p.id || null]); }
+        else { st.y[k]++; st.c.push([min, k, who?.p.name || null, "Y", who?.p.id || null]); }
+      } else if (rng() < 0.004 * ag * ag * wpos) {
+        st.r[k]++; st.c.push([1 + Math.floor(rng() * 90), k, who?.p.name || null, "R", who?.p.id || null]);
+      }
+    }
+    st.f[k] = Math.round(9 * AGG_CARD[X.agg - 1] * (0.8 + 0.4 * rng()) + st.y[k] + 2 * st.r[k]);
+  }
+  st.c.sort((x, y) => x[0] - y[0]);
+  // Stärke: Zweikampfhärte, Unterzahl
+  const eff = sides.map((X, k) => {
+    const zk = X.human && X.X.ovr ? X.X.zwk / X.X.ovr : 1;
+    return X.str * (1 + (X.agg - 3) * 0.012 * zk) * (1 - 0.12 * st.r[k]);
   });
-  return out;
+  const rel = ((eff[0] - eff[1]) / Math.max(1, (eff[0] + eff[1]) / 2)) * 100 + (neutral ? 0 : 6);
+  const f = (x) => clamp(x <= -60 ? 0.08 : Math.pow(1 + x / 60, 2), 0.08, 4.5);
+  const lh = r4(1.35 * f(rel) * H.tac[0] * A.tac[1] * (0.85 + 0.3 * rng()));
+  const la = r4(1.1 * f(-rel) * A.tac[0] * H.tac[1] * (0.85 + 0.3 * rng()));
+  const goals = (l) => { let g = 0; const p = Math.min(0.85, l / 10); for (let i = 0; i < 10; i++) if (rng() < p) g++; return g; };
+  const gh = goals(lh), ga = goals(la);
+  // Torschützen
+  for (const [k, n] of [[0, gh], [1, ga]]) {
+    for (let i = 0; i < n; i++) {
+      const who = pickWeighted(rng, sides[k].players, (x) => x.w ?? SCORE_W[x.slot] * Math.pow((x.p.a.abs + x.p.a.kop * 0.3) / 100, 2));
+      st.g.push([1 + Math.floor(rng() * 90), k, who?.p.name || "Eigentor", who?.p.id || null]);
+    }
+  }
+  st.g.sort((x, y) => x[0] - y[0]);
+  // Statistik
+  const tacPoss = { defensiv: -4, normal: 0, offensiv: 3 };
+  const ph = Math.round(clamp(50 + rel * 0.22 + (tacPoss[H.tacName] || 0) - (tacPoss[A.tacName] || 0) + (rng() - 0.5) * 8, 22, 78));
+  st.p = [ph, 100 - ph];
+  st.s = [gh + Math.round(lh * 3.3 + rng() * 4), ga + Math.round(la * 3.3 + rng() * 4)];
+  st.o = [gh + Math.round((st.s[0] - gh) * (0.2 + 0.2 * rng())), ga + Math.round((st.s[1] - ga) * (0.2 + 0.2 * rng()))];
+  return { gh, ga, lh, la, rel, st, H, A };
 }
 
-export function humanXI(S, c) {
-  const h = c.h;
-  const [nab, nmf, nst] = FORMATIONS[h.formation] || FORMATIONS["4-4-2"];
-  const ps = h.players.slice().sort((a, b) => b.str - a.str || (a.id < b.id ? -1 : 1));
-  const used = new Set(), xi = [];
-  const take = (pos, n) => { for (const p of ps) { if (n <= 0) break; if (!used.has(p.id) && p.pos === pos) { used.add(p.id); xi.push({ p, eff: p.str }); n--; } } return n; };
-  const missing = take("TW", 1) + take("AB", nab) + take("MF", nmf) + take("ST", nst);
-  for (const p of ps) { if (xi.length >= 11) break; if (!used.has(p.id) && p.pos !== "TW") { used.add(p.id); xi.push({ p, eff: p.str * 0.8 }); } }
-  while (xi.length < 11) xi.push({ p: null, eff: 0.5 });
-  let str = xi.reduce((s, x) => s + x.eff, 0) / 11;
-  if (h.trainer) str *= 1 + clamp((h.trainer.q / Math.max(1, str) - 1) * 0.03, -0.04, 0.04);
-  return { str: r2(str), xi, missing };
+// Nach dem Spiel: Einsätze, Tore, Karten, Fitness, Verletzungen der eigenen Spieler
+const INJURIES = [
+  { n: "Prellung", min: 1, max: 3, w: 30, back: 75, sev: 0 }, { n: "Muskelverhärtung", min: 1, max: 2, w: 15, back: 80, sev: 0 },
+  { n: "Zerrung", min: 3, max: 8, w: 22, back: 65, sev: 1 }, { n: "Bänderdehnung", min: 5, max: 12, w: 8, back: 60, sev: 1 },
+  { n: "Gehirnerschütterung", min: 5, max: 10, w: 2, back: 70, sev: 1, head: true }, { n: "Muskelfaserriss", min: 10, max: 21, w: 10, back: 55, sev: 2 },
+  { n: "Bänderriss", min: 28, max: 50, w: 4, back: 45, sev: 2 }, { n: "Mittelfußbruch", min: 40, max: 70, w: 1, back: 40, sev: 3 },
+  { n: "Meniskusschaden", min: 30, max: 60, w: 2, back: 40, sev: 3 }, { n: "Kreuzbandriss", min: 150, max: 220, w: 0.6, back: 35, sev: 3 },
+];
+const ILLNESS = [{ n: "Erkältung", min: 1, max: 3, w: 50, back: 80 }, { n: "Grippe", min: 4, max: 8, w: 25, back: 60 }, { n: "Magen-Darm-Infekt", min: 1, max: 3, w: 25, back: 75 }];
+function injure(S, c, p, rng, list, sevBoost, ill) {
+  const it = pickWeighted(rng, list, (x) => x.w * (x.sev ? 1 + sevBoost * x.sev : 1));
+  const days = it.min + Math.floor(rng() * (it.max - it.min + 1));
+  p.inj = { n: it.n, days, back: it.back, ill: !!ill }; p.fit = 0;
+  userNews(S, c.owner, `${ill ? "Erkrankt" : "Verletzt"}: ${p.name} – ${it.n}, fällt ca. ${days} ${days === 1 ? "Tag" : "Tage"} aus.`);
+}
+function afterMatchHuman(S, X, opp, r, k, compName, isLeague, daySeed) {
+  const c = X.c, h = c.h, lvl = (h.intensity || 3) - 1;
+  const rng = rngFrom(daySeed, "post", c.id, compName);
+  const ids = new Set(X.players.map((x) => x.p.id));
+  const at = (h.allTime[compName] = h.allTime[compName] || {});
+  const bump = (p, key) => { p.s[key]++; p.c[key]++; const e = (at[p.id] = at[p.id] || { name: p.name, apps: 0, g: 0, y: 0, r: 0 }); e.name = p.name; e[key]++; };
+  for (const { p } of X.players) bump(p, "apps");
+  for (const g of r.st.g) if (g[1] === k && g[3] && ids.has(g[3])) bump(h.players.find((p) => p.id === g[3]), "g");
+  for (const cd of r.st.c) if (cd[1] === k && cd[4] && ids.has(cd[4])) {
+    const p = h.players.find((q) => q.id === cd[4]);
+    if (cd[3] === "Y") { bump(p, "y"); if (isLeague && p.s.y % 5 === 0) { p.ban = Math.max(p.ban, 1); userNews(S, c.owner, `${p.name} ist nach der ${p.s.y}. Gelben Karte für ein Spiel gesperrt.`); } }
+    else { bump(p, "r"); p.ban = Math.max(p.ban, cd[3] === "R" ? 2 : 1); userNews(S, c.owner, `${cd[3] === "R" ? "Rote Karte" : "Gelb-Rot"} für ${p.name} – Sperre ${cd[3] === "R" ? 2 : 1} Spiel(e).`); }
+  }
+  const oppAgg = AGG_HURT[(opp.agg || 3) - 1];
+  for (const { p } of X.players) {
+    const before = p.fit;
+    p.fit = r2(clamp(p.fit - INT_DRAIN[lvl] * (1.25 - p.a.fit / 200), 0, 100));
+    p.played = true;
+    const ageF = p.age > 30 ? 1 + 0.05 * (p.age - 30) : 1;
+    const risk = 0.009 * INT_RISK[lvl] * (1 + 2.5 * Math.pow(1 - before / 100, 2)) * ageF * oppAgg * (1.15 - p.a.fit / 300);
+    if (!p.inj && rng() < risk) injure(S, c, p, rng, INJURIES, 2 * (1 - before / 100) + (oppAgg - 1), false);
+  }
+  // Mannschaftsstatistik der Saison
+  const ts = (h.tstats = h.tstats || {});
+  const add = (key, v) => { ts[key] = (ts[key] || 0) + v; };
+  add("games", 1); add("poss", r.st.p[k]); add("shots", r.st.s[k]); add("on", r.st.o[k]); add("shotsAg", r.st.s[1 - k]); add("fouls", r.st.f[k]);
+  add("y", r.st.y[k]); add("r", r.st.r[k]); add("gf", k ? r.ga : r.gh); add("ga", k ? r.gh : r.ga);
+  const gfx = k ? r.ga : r.gh, gax = k ? r.gh : r.ga; add(gfx > gax ? "w" : gfx < gax ? "l" : "d", 1);
+  h.reports.push({ season: S.season, day: S.day, comp: compName, h: r.H.t.name, a: r.A.t.name, gh: r.gh, ga: r.ga, st: r.st, k });
+  if (h.reports.length > 40) h.reports.shift();
+}
+function recordLeagueGoals(S, lg, r) {
+  let m = S.lscorers.get(lg.id); if (!m) { m = new Map(); S.lscorers.set(lg.id, m); }
+  for (const g of r.st.g) {
+    if (!g[3]) continue;
+    const tid = g[1] ? r.A.t.id : r.H.t.id;
+    const e = m.get(g[3]) || { id: g[3], name: g[2], team: tid, goals: 0 };
+    e.goals++; m.set(g[3], e);
+  }
+}
+export function topScorers(S, n = 25, leagueId = "bl") {
+  const m = S.lscorers.get(leagueId); if (!m) return [];
+  return [...m.values()].sort((a, b) => b.goals - a.goals || (a.name < b.name ? -1 : 1)).slice(0, n);
 }
 
 function ledger(h, kind, cat, amount) {
@@ -541,13 +742,13 @@ function newLedger() { return { in: {}, out: {} }; }
 function takeOver(S, c, userId, cash) {
   const t = firstTeam(S, c);
   const L = t.level <= 11 ? t.level : 11;
-  const players = aiSquad(S, t).map((p) => ({ ...p, id: "h" + c.id + ":" + p.id }));
+  const players = aiSquad(S, t).map((p) => ({ ...p, a: { ...p.a }, s: newStats(), c: newStats(), fit: 100, id: "h" + c.id + ":" + p.id }));
   const fac = LV[L].fac;
   c.owner = userId;
   c.h = {
     cash: eur(cash), players, trainer: null, fac: { jugend: fac, training: fac, umfeld: fac }, formation: "4-4-2", tactic: "normal",
     ticket: 1, sponsor: null, offers: [], reserves: {}, popularity: 1, ledger: newLedger(), annual: [], youthSeq: 0,
-    trainers: [],
+    trainers: [], intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [],
   };
   for (const tid of c.teams.slice(1)) c.h.reserves[S.teams.get(tid).rank] = { team: tid, active: true };
   seasonStartHuman(S, c, true);
@@ -595,7 +796,7 @@ export function marketFor(S, c, rngSeedDay) {
     }
   }
   for (const p of S.freeAgents.slice(-6)) out.push({ ...p, from: null, price: eur(valueOf(p) * 0.3) });
-  return out.sort((a, b) => b.str - a.str);
+  return out.sort((a, b) => b.max - a.max);
 }
 
 export function facilityCost(S, c, kind) {
@@ -651,8 +852,9 @@ export function applyAction(S, a, userName, daySeed) {
       c.owner = a.user_id;
       const rng = rngFrom(daySeed, "found", id);
       c.h = { cash: 50000, players: [], trainer: null, fac: { jugend: 0, training: 0, umfeld: 0 }, formation: "4-4-2", tactic: "normal", ticket: 1,
-        sponsor: null, offers: [], reserves: {}, popularity: 0.8, ledger: newLedger(), annual: [], youthSeq: 0, trainers: [] };
-      POS_PLAN.slice(0, 18).forEach((pos, i) => c.h.players.push(genPlayer(rng, pos, LV[11].bot * (0.75 + rng() * 0.5), 17 + Math.floor(rng() * 16), "h" + id, i)));
+        sponsor: null, offers: [], reserves: {}, popularity: 0.8, ledger: newLedger(), annual: [], youthSeq: 0, trainers: [],
+        intensity: 3, aggression: 3, allTime: {}, tstats: {}, reports: [] };
+      FOUND_PLAN.forEach((pos, i) => c.h.players.push(genPlayer(rng, pos, LV[11].bot * (0.75 + rng() * 0.5), 17 + Math.floor(rng() * 16), "h" + id, i)));
       seasonStartHuman(S, c, true);
       news(S, `Neugründung: ${name} (${kreis === "RH" ? "Region Hannover" : "Hameln-Pyrmont"}) startet zur nächsten Saison in der untersten Spielklasse.`);
       userNews(S, a.user_id, `${name} ist gegründet. Ihr startet zur nächsten Saison in der untersten Spielklasse eures Kreises.`);
@@ -699,6 +901,9 @@ export function applyAction(S, a, userName, daySeed) {
       if (!h) return fail("Kein Verein.");
       if (P.formation && FORMATIONS[P.formation]) h.formation = P.formation;
       if (P.tactic && TACTICS[P.tactic]) h.tactic = P.tactic;
+      if (P.intensity) h.intensity = clamp(Math.round(Number(P.intensity)) || 3, 1, 5);
+      if (P.aggression) h.aggression = clamp(Math.round(Number(P.aggression)) || 3, 1, 5);
+      if (P.minFit != null) h.minFit = clamp(Math.round(Number(P.minFit)) || 0, 0, 90);
       return true;
     }
     case "ticket": {
@@ -738,9 +943,10 @@ export function applyAction(S, a, userName, daySeed) {
       if (h.cash < m.price) return fail("Nicht genug Geld.");
       ledger(h, "out", "Transfers", m.price);
       S.taken.add(m.id); S.freeAgents = S.freeAgents.filter((x) => x.id !== m.id);
-      h.players.push({ id: "h" + club.id + ":" + m.id, name: m.name, pos: m.pos, age: m.age, str: m.str, pot: m.pot, wage: wageOf(m.str) });
+      h.players.push({ id: "h" + club.id + ":" + m.id, name: m.name, pos: m.pos, age: m.age, a: { ...m.a }, max: m.max, pot: m.pot, wage: wageOf(m.max),
+        fit: m.inj ? 0 : 100, inj: null, ban: 0, s: newStats(), c: newStats() });
       if (m.from) { const ft = S.teams.get(m.from); ft.str = r2(ft.str * 0.997); }
-      userNews(S, a.user_id, `${m.name} (${m.pos}, ${m.str.toFixed(2)}) verpflichtet für ${fmt(m.price)}.`);
+      userNews(S, a.user_id, `${m.name} (${m.pos}, ${m.max.toFixed(2)}) verpflichtet für ${fmt(m.price)}.`);
       return true;
     }
     case "sellPlayer": {
@@ -813,15 +1019,17 @@ export function playDay(S, g, daySeed) {
     const fx = lg.fixtures[d]; if (!fx) continue;
     for (const m of fx) {
       const r = playMatch(S, m.h, m.a, rngFrom(daySeed, lg.id, m.h, m.a));
-      m.gh = r.gh; m.ga = r.ga;
+      m.gh = r.gh; m.ga = r.ga; m.st = r.st;
+      recordLeagueGoals(S, lg, r);
+      if (r.H.human) afterMatchHuman(S, r.H, r.A, r, 0, lg.name, true, daySeed);
+      if (r.A.human) afterMatchHuman(S, r.A, r.H, r, 1, lg.name, true, daySeed);
       const th = lg.table.get(m.h), ta = lg.table.get(m.a);
       th.p++; ta.p++; th.gf += r.gh; th.ga += r.ga; ta.gf += r.ga; ta.ga += r.gh;
       if (r.gh > r.ga) { th.w++; th.pts += 3; ta.l++; } else if (r.gh < r.ga) { ta.w++; ta.pts += 3; th.l++; } else { th.d++; ta.d++; th.pts++; ta.pts++; }
       matchFinance(S, m.h, m.a, r, lg.level, false, null);
-      if (lg.level === 1) blStats(S, m, daySeed);
+      if (lg.level === 1) blRecords(S, m);
     }
   }
-  for (const t of S.teams.values()) t.fatigue = 0;
   // Pokale
   for (const cup of S.cups) {
     const ri = cup.rounds.findIndex((r) => r && r.day === d);
@@ -831,7 +1039,9 @@ export function playDay(S, g, daySeed) {
     for (const m of rd.matches) {
       const rr = rngFrom(daySeed, cup.id, m.h, m.a);
       const r = playMatch(S, m.h, m.a, rr, ri === cup.days.length - 1 && cup.type === "dfb");
-      m.gh = r.gh; m.ga = r.ga;
+      m.gh = r.gh; m.ga = r.ga; m.st = r.st;
+      if (r.H.human) afterMatchHuman(S, r.H, r.A, r, 0, cup.name, false, daySeed);
+      if (r.A.human) afterMatchHuman(S, r.A, r.H, r, 1, cup.name, false, daySeed);
       if (m.gh === m.ga) {
         m.et = true;
         const p1 = Math.min(0.8, r.lh / 3 / 4), p2 = Math.min(0.8, r.la / 3 / 4);
@@ -840,7 +1050,6 @@ export function playDay(S, g, daySeed) {
       }
       m.winner = m.pen ? (m.pen === "h" ? m.h : m.a) : m.gh > m.ga ? m.h : m.a;
       winners.push(m.winner);
-      S.teams.get(m.h).fatigue = 0.02; S.teams.get(m.a).fatigue = 0.02;
       matchFinance(S, m.h, m.a, r, Math.min(S.teams.get(m.h).level, 11), true, cup);
       cupPrize(S, m.h, cup, ri); cupPrize(S, m.a, cup, ri);
     }
@@ -913,53 +1122,52 @@ function humanDaily(S, c, daySeed) {
   for (const rk of [2, 3]) if (h.reserves[rk]?.active) ledger(h, "out", rk + ". Mannschaft", reserveCost(S, c, rk) * per);
   if (LV[L].tv) ledger(h, "in", "TV-Gelder", LV[L].tv * per);
   ledger(h, "in", "Sponsoring", (h.sponsor ? h.sponsor.base : LV[L].sponsor * 0.35) * per);
-  // Training
+  // Fitness, Verletzungen, Krankheiten, Training
+  const lvl = (h.intensity || 3) - 1;
   const rng = rngFrom(daySeed, "train", c.id);
   const trainerF = h.trainer ? clamp(0.6 + (h.trainer.q / Math.max(1, levelMid(L))) * 0.5, 0.6, 1.8) : 0.5;
+  const mf = monthFactor(S);
+  const illNow = h.players.filter((p) => p.inj?.ill).length;
   for (const p of h.players) {
+    if (p.inj) {
+      p.fit = 0;
+      if (--p.inj.days <= 0) { const back = p.inj.back; userNews(S, c.owner, `${p.name} ist wieder einsatzbereit.`); p.inj = null; p.fit = back; }
+    } else {
+      p.fit = r2(clamp(p.fit + INT_REC[lvl] * (0.8 + p.a.fit / 250) * (p.played ? 0.5 : 1), 0, 100));
+      const illP = 0.0018 * mf * (p.fit < 40 ? 1.6 : 1) * (1 + 0.35 * illNow);
+      const trP = 0.0012 * INT_RISK[lvl] * (1 + (1 - p.fit / 100)) * (p.played ? 0.3 : 1);
+      const x = rng();
+      if (x < illP) injure(S, c, p, rng, ILLNESS, 0, true);
+      else if (x < illP + trP) injure(S, c, p, rng, INJURIES, 0.5, false);
+    }
+    p.played = false;
+    if (p.ban > 0) p.ban--;
+    // Training
+    if (p.inj) continue;
     let delta = 0;
-    if (p.str < p.pot && p.age < 30) delta += (p.pot - p.str) * 0.006 * (1 + 0.1 * h.fac.training) * trainerF * (0.5 + rng());
-    if (p.age >= 30) delta -= p.str * 0.0006 * (p.age - 29) * (0.5 + rng());
-    p.str = r2(clamp(p.str + delta, 0.5, 99.99));
-  }
-}
-
-
-// ---------------------------------------------------------------- Bundesliga: Torschützen & Rekorde
-function scorerPool(S, t) {
-  const c = S.clubs.get(t.clubId);
-  if (t.rank === 1 && c?.h) return c.h.players.map((p) => ({ id: p.id, name: p.name, pos: p.pos, str: p.str }));
-  let sq = S.squadCache.get(t.id);
-  if (!sq) { sq = aiSquad(S, t); S.squadCache.set(t.id, sq); }
-  return sq;
-}
-const POS_W = { TW: 0, AB: 0.2, MF: 0.9, ST: 5 };
-function pickScorer(rng, pool) {
-  const ranked = pool.slice().sort((a, b) => b.str - a.str || (a.id < b.id ? -1 : 1));
-  const top = ranked[0]?.str || 1;
-  const w = ranked.map((p, i) => POS_W[p.pos] * Math.pow(p.str / top, 6) * (i < 14 ? 1 : 0.15));
-  const tot = w.reduce((a, b) => a + b, 0); if (!tot) return null;
-  let x = rng() * tot;
-  for (let i = 0; i < ranked.length; i++) { x -= w[i]; if (x <= 0) return ranked[i]; }
-  return ranked[ranked.length - 1];
-}
-function blStats(S, m, daySeed) {
-  const rng = rngFrom(daySeed, "scorer", m.h, m.a);
-  for (const [tid, goals] of [[m.h, m.gh], [m.a, m.ga]]) {
-    const t = S.teams.get(tid); const pool = scorerPool(S, t);
-    for (let g = 0; g < goals; g++) {
-      const p = pickScorer(rng, pool); if (!p) continue;
-      const e = S.scorers.get(p.id) || { id: p.id, name: p.name, team: tid, goals: 0 };
-      e.goals++; S.scorers.set(p.id, e);
+    if (p.max < p.pot && p.age < 30) delta += (p.pot - p.max) * 0.006 * (1 + 0.1 * h.fac.training) * trainerF * INT_GROW[lvl] * (0.5 + rng());
+    if (p.age >= 30) delta -= p.max * 0.0006 * (p.age - 29) * (0.5 + rng());
+    if (delta) {
+      const f = clamp((p.max + delta) / Math.max(0.5, p.max), 0.9, 1.1);
+      for (const k of ATTRS) p.a[k] = r2(clamp(p.a[k] * f, 0.5, 99.99));
+      refreshPlayer(p);
     }
   }
+}
+function monthFactor(S) {
+  if (!S.startDate) return 1;
+  const [y, m, d] = S.startDate.split("-").map(Number);
+  const mon = new Date(Date.UTC(y, m - 1, d + (S.gday || 1) - 1)).getUTCMonth() + 1;
+  return [12, 1, 2].includes(mon) ? 2.2 : [11, 3].includes(mon) ? 1.6 : [10, 4].includes(mon) ? 1.1 : 0.7;
+}
+
+
+// ---------------------------------------------------------------- Rekorde Bundesliga
+function blRecords(S, m) {
   const diff = Math.abs(m.gh - m.ga), tot = m.gh + m.ga;
   const rec = { season: S.season, day: S.day, h: S.teams.get(m.h).name, a: S.teams.get(m.a).name, gh: m.gh, ga: m.ga };
   if (!S.records.bigWin || diff > Math.abs(S.records.bigWin.gh - S.records.bigWin.ga)) S.records.bigWin = rec;
   if (!S.records.maxGoals || tot > S.records.maxGoals.gh + S.records.maxGoals.ga) S.records.maxGoals = rec;
-}
-export function topScorers(S, n = 25) {
-  return [...S.scorers.values()].sort((a, b) => b.goals - a.goals || (a.name < b.name ? -1 : 1)).slice(0, n);
 }
 function addTrophy(S, clubId, tr) {
   if (!clubId) return;
@@ -986,6 +1194,7 @@ function seasonEnd(S, daySeed) {
     S.lastTables.set(lg.id, tab.map((r) => ({ ...r, name: S.teams.get(r.id).name })));
   }
   S.lastRank = rank;
+  S.archive.push({ season: S.season, leagues: Object.fromEntries([...S.leagues.values()].filter((l) => l.teams.length).map((l) => [l.id, { name: l.name, level: l.level, rows: S.lastTables.get(l.id).map((r) => ({ id: r.id, name: r.name, p: r.p, w: r.w, d: r.d, l: r.l, gf: r.gf, ga: r.ga, pts: r.pts })), scorers: topScorers(S, 10, l.id).map((x) => ({ name: x.name, team: S.teams.get(x.team)?.name, goals: x.goals })) }])) });
   S.cupWinners = {};
   for (const cup of S.cups) S.cupWinners[cup.id] = { winner: cup.winner, runnerUp: cup.runnerUp };
   // Trophäen
@@ -1006,7 +1215,7 @@ function seasonEnd(S, daySeed) {
     S.eternal.set(r.id, e);
     if (!S.records.maxPts || r.pts > S.records.maxPts.pts) S.records.maxPts = { season: S.season, name: r.name, pts: r.pts };
   });
-  const king = topScorers(S, 1)[0];
+  const king = topScorers(S, 1, "bl")[0];
   S.history.push({ season: S.season, champions, blChampion: blTab[0]?.name || null, topScorer: king ? { name: king.name, team: S.teams.get(king.team)?.name, goals: king.goals } : null, cups: S.cups.map((c) => ({ name: c.name, winner: c.winner ? S.teams.get(c.winner)?.name : null })) });
   // Jahresabschluss menschlicher Vereine
   for (const c of S.clubs.values()) {
@@ -1069,20 +1278,20 @@ function seasonEnd(S, daySeed) {
     if (!c.h) continue;
     const h = c.h, t = firstTeam(S, c); const L = Math.min(t.level, 11);
     const rr = rngFrom(daySeed, "youth", c.id);
-    for (const p of h.players) { p.age++; p.wage = wageOf(p.str); }
+    for (const p of h.players) { p.age++; p.wage = wageOf(p.max); }
     const retire = h.players.filter((p) => p.age >= 36 || (p.age >= 33 && rr() < 0.25));
     if (retire.length) userNews(S, c.owner, "Karriereende: " + retire.map((p) => p.name).join(", "));
     h.players = h.players.filter((p) => !retire.includes(p));
     const n = 2 + Math.floor(h.fac.jugend / 3);
     for (let i = 0; i < n; i++) {
       const base = levelMid(L) * (0.32 + 0.035 * h.fac.jugend) * (0.8 + rr() * 0.4);
-      const pos = ["TW", "AB", "MF", "ST", "AB", "MF"][Math.floor(rr() * 6)];
+      const pos = POSITIONS[Math.floor(rr() * POSITIONS.length)];
       const p = genPlayer(rr, pos, base, 17 + Math.floor(rr() * 2), "y" + c.id + ":" + S.season, h.youthSeq++);
-      p.pot = r2(clamp(base * (1.5 + 0.09 * h.fac.jugend + rr() * 0.4), base, 99.99));
+      p.pot = r2(clamp(p.max * (1.5 + 0.09 * h.fac.jugend + rr() * 0.4), p.max, 99.99));
       h.players.push(p);
     }
     userNews(S, c.owner, `${n} Talente aus der eigenen Jugend rücken in den Kader auf.`);
-    while (h.players.length < 14) h.players.push(genPlayer(rr, "MF", levelMid(L) * 0.6, 20, "f" + c.id + ":" + S.season, h.youthSeq++));
+    while (h.players.length < 14) h.players.push(genPlayer(rr, FOUND_PLAN[h.players.length % FOUND_PLAN.length], levelMid(L) * 0.6, 20, "f" + c.id + ":" + S.season, h.youthSeq++));
     // Reservestärke
     for (const rk of [2, 3]) { const r = h.reserves[rk]; if (r?.team) { const rt = S.teams.get(r.team); rt.str = r2(humanXI(S, c).str * (rk === 2 ? 0.55 : 0.4) * (1 + 0.02 * h.fac.jugend)); } }
   }
@@ -1095,9 +1304,10 @@ function seasonEnd(S, daySeed) {
 
 // ---------------------------------------------------------------- Gesamt-Simulation
 // seeds: Array, seeds[g] = Hex-String für globalen Tag g (0 = Vorsaison). actions: [{id,user_id,type,payload,eff_day}]
-export function simulate(world, seeds, actions, members = {}) {
+export function simulate(world, seeds, actions, members = {}, opts = {}) {
   const S0 = hex32(seeds[0]);
   const S = createState(world, S0);
+  S.startDate = opts.startDate || null;
   const byDay = new Map();
   for (const a of actions.slice().sort((x, y) => x.id - y.id)) {
     const d = Math.max(1, a.eff_day | 0);
